@@ -12,7 +12,7 @@ nothing was reliable:
 Live never sees video and never counts. That keeps its turns short and stops it
 stalling, and it is why small movements like shoulder rolls now register at all.
 """
-import asyncio, base64, io, json, logging, os, pathlib, time, traceback, wave
+import asyncio, base64, io, json, logging, os, pathlib, re, time, traceback, wave
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -59,12 +59,38 @@ CONFIG = types.LiveConnectConfig(
         language_code=LANG,
         voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
-    output_audio_transcription=types.AudioTranscriptionConfig(),
-    input_audio_transcription=types.AudioTranscriptionConfig(),
+    # Pin BOTH transcriptions to English. language_code on speech_config only binds
+    # what it says; input transcription was auto-detecting and coming back Spanish.
+    output_audio_transcription=types.AudioTranscriptionConfig(
+        language_codes=[LANG]),
+    input_audio_transcription=types.AudioTranscriptionConfig(
+        language_codes=[LANG]),
+    # A crowded room sets off barge-in constantly. Make it harder to trigger and
+    # require a longer silence before it decides the user has stopped talking.
+    realtime_input_config=types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+            end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+            prefix_padding_ms=300, silence_duration_ms=900)),
 )
 FORM_CFG = types.GenerateContentConfig(
-    response_mime_type="application/json", temperature=0.3, max_output_tokens=400,
+    response_mime_type="application/json", temperature=0.3,
+    max_output_tokens=900,          # 400 truncated the JSON mid-string
     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+
+
+def parse_form(text: str) -> dict:
+    """Salvage a truncated response rather than throwing the whole check away."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    out = {}
+    for key in ("needs", "framing", "observed", "verdict", "cue", "error", "correction"):
+        m = re.search(rf'"{key}"\s*:\s*"([^"]*)', text or "")
+        if m:
+            out[key] = m.group(1)
+    return out
 
 
 @app.get("/")
@@ -153,7 +179,10 @@ async def live(ws: WebSocket):
                             contents=[types.Part(text=form_prompt(st["exercise"], st["reps"])),
                                       types.Part(inline_data=types.Blob(
                                           data=st["frame"], mime_type="image/jpeg"))])
-                        v = json.loads(r.text or "{}")
+                        v = parse_form(r.text or "")
+                        if not v.get("verdict"):
+                            log.warning("form check unusable: %r", (r.text or "")[:120])
+                            continue
                     except Exception as e:
                         log.warning("form check failed: %s", str(e)[:120])
                         continue
