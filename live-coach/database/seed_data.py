@@ -193,6 +193,61 @@ ROUTINES = [
         "disclaimer": "Discontinue if shoulder pinching occurs."
     },
     {
+        "id": "routine_spine_friendly_core",
+        "title": "Spine-Friendly Core & Hip Stability",
+        "focus": "posterior_chain_mobility",
+        "intensity_tier": "low",
+        "duration_min": 12,
+        "tags": ["restorative", "lumbar_safe", "knee_safe", "low_impact"],
+        "exercise_ids": ["ex_supine_90_90", "ex_bird_dog", "ex_glute_bridge_iso"],
+        "description": "A supported breathing, trunk-control, and hip-extension sequence with no external load.",
+        "disclaimer": "Use a comfortable range and stop if symptoms worsen."
+    },
+    {
+        "id": "routine_gentle_mobility_reset",
+        "title": "Gentle Mobility & Recovery Reset",
+        "focus": "posterior_chain_mobility",
+        "intensity_tier": "low",
+        "duration_min": 10,
+        "tags": ["restorative", "lumbar_safe", "knee_safe", "low_impact", "senior_safe"],
+        "exercise_ids": ["ex_cat_camel", "ex_side_lying_clam", "ex_supine_90_90"],
+        "description": "A short floor-based reset combining easy spinal movement, hip activation, and supported breathing.",
+        "disclaimer": "Keep each movement pain-free and skip anything uncomfortable."
+    },
+    {
+        "id": "routine_knee_control_foundation",
+        "title": "Supported Knee Control & Hip Foundation",
+        "focus": "knee_rehab",
+        "intensity_tier": "low",
+        "duration_min": 12,
+        "tags": ["knee_safe", "low_impact", "quad_rehab"],
+        "exercise_ids": ["ex_tke_band", "ex_seated_chair_squat", "ex_glute_bridge_iso"],
+        "description": "A supported sequence for controlled knee extension, chair transfers, and hip strength.",
+        "disclaimer": "Stay within a comfortable range; stop if you feel pain."
+    },
+    {
+        "id": "routine_knee_isometric_reset",
+        "title": "Low-Impact Knee Isometric Reset",
+        "focus": "knee_rehab",
+        "intensity_tier": "low",
+        "duration_min": 10,
+        "tags": ["knee_safe", "low_impact", "quad_rehab", "isometric"],
+        "exercise_ids": ["ex_spanish_squat_iso", "ex_tke_band", "ex_side_lying_clam"],
+        "description": "A low-impact option pairing supported isometric work with gentle hip activation.",
+        "disclaimer": "Only use the isometric position if it is comfortable and within your clinician's guidance."
+    },
+    {
+        "id": "routine_shoulder_posture_reset",
+        "title": "Shoulder-Friendly Posture Reset",
+        "focus": "upper_body_mobility",
+        "intensity_tier": "low",
+        "duration_min": 10,
+        "tags": ["shoulder_safe", "low_impact", "posture"],
+        "exercise_ids": ["ex_wall_slides", "ex_banded_face_pull", "ex_cat_camel"],
+        "description": "A gentle upper-back and shoulder sequence focused on controlled scapular movement.",
+        "disclaimer": "Skip any movement that causes pinching or discomfort."
+    },
+    {
         "id": "routine_hiit_anaerobic_blast",
         "title": "High-Intensity Anaerobic Plyo Circuit",
         "focus": "cardio_anaerobic",

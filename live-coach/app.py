@@ -135,12 +135,7 @@ class CompleteWorkoutRequest(BaseModel):
 async def get_profile(user_id: str = "default_user"):
     user = db.get_user(user_id) or {}
     progress = db.get_user_progress(user_id)
-    flags = user.get("orthopedic_flags", [])
-    focus = "knee_rehab" if "knee_pain" in flags else "posterior_chain_mobility"
-    recommended_routines = db.query_local_routines(
-        focus=focus,
-        exclude_tags=["deep_flexion", "high_impact"] if "knee_pain" in flags else None
-    )
+    recommended_routines = db.get_recommended_routines(user_id)
     return {
         "user": user,
         "progress": progress,
@@ -169,6 +164,24 @@ async def complete_workout(user_id: str, req: CompleteWorkoutRequest):
     )
     result["progress"] = db.get_user_progress(user_id)
     return result
+
+
+@app.post("/api/profile/{user_id}/reset")
+async def reset_profile(user_id: str = "default_user"):
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM workout_logs WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM live_tool_queue")
+        cursor.execute("DELETE FROM sdac_audit_logs")
+        cursor.execute("""
+            UPDATE users 
+            SET workout_count = 0, current_day = 0, streak_days = 0,
+                health_goals = '[]', healthcare_recommendations = '[]',
+                orthopedic_flags = '[]', target_duration_min = 15
+            WHERE id = ?
+        """, (user_id,))
+        conn.commit()
+    return {"status": "cleared", "user_id": user_id}
 
 
 @app.get("/api/linked_profile")
@@ -397,6 +410,25 @@ async def demo_narration(d: DemoIn):
     return {"wav_b64": base64.b64encode(_wav(pcm)).decode()}
 
 
+@app.get("/api/coach_voice")
+async def coach_voice(text: str = "Hello! What are your goals today? I'm listening."):
+    """Generate audio matching the coach's voice (TTS Puck / 24kHz)."""
+    if not client:
+        return {"ok": False, "reason": "no_client"}
+    try:
+        a = await client.aio.models.generate_content(
+            model=TTS, contents=f"Say warmly and briefly like an athletic digital fitness coach: {text}",
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)))))
+        pcm = a.candidates[0].content.parts[0].inline_data.data
+        return {"ok": True, "wav_b64": base64.b64encode(_wav(pcm, 24000)).decode()}
+    except Exception as e:
+        log.warning("coach_voice error: %s", e)
+        return {"ok": False, "reason": str(e)}
+
+
 @app.get("/health")
 async def health():
     # started_at tells you whether the process actually picked up your last edit.
@@ -414,4 +446,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     log.info(f"Starting server on 0.0.0.0:{port}")
     uvicorn.run("app:app", host="0.0.0.0", port=port, log_level="info")
-

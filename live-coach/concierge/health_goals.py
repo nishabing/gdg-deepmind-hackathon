@@ -26,14 +26,12 @@ class HealthGoalsManager:
         extracted_goals: List[str] = []
         orthopedic_flags: List[str] = []
         healthcare_recs: List[str] = []
-        target_focus = "posterior_chain_mobility"
 
         # 1. Pattern analysis for Health Goals
         # Knee health
         if any(w in text_lower for w in ["knee", "patellar", "tendonitis"]):
             extracted_goals.append("Rehabilitate knee joints and strengthen stabilizing quadriceps (VMO)")
             orthopedic_flags.append("knee_pain")
-            target_focus = "knee_rehab"
             healthcare_recs.extend([
                 "Patellofemoral Protocol: Limit active knee flexion to 60° and eliminate plyometric jumping.",
                 "Incorporate terminal knee extensions (TKE) and Spanish squat isometric holds for tendon relief.",
@@ -44,7 +42,6 @@ class HealthGoalsManager:
         if any(w in text_lower for w in ["back", "lumbar", "spine", "stiffness", "sciatica"]):
             extracted_goals.append("Alleviate lower back stiffness and decompress lumbar spine")
             orthopedic_flags.append("lumbar_stiffness")
-            target_focus = "posterior_chain_mobility"
             healthcare_recs.extend([
                 "Lumbar Neutrality: Avoid axial spinal loading (heavy barbell squats) and unassisted end-range flexion.",
                 "Perform diaphragmatic breathing in supine 90/90 position daily to reset pelvic tension.",
@@ -112,13 +109,8 @@ class HealthGoalsManager:
             healthcare_recommendations=healthcare_recs
         )
 
-        # Curate recommended routines based on the updated goals and flags
-        recommended_routines = self.db.query_local_routines(
-            focus=target_focus,
-            exclude_tags=["deep_flexion", "high_impact"] if "knee_pain" in existing_flags else None
-        )
-        if not recommended_routines:
-            recommended_routines = self.db.query_local_routines(focus="posterior_chain_mobility")
+        # Use the same goal-, constraint-, and history-aware selector as the profile API.
+        recommended_routines = self.db.get_recommended_routines(user_id)
 
         return {
             "health_goals": extracted_goals,

@@ -70,27 +70,25 @@ class DBManager:
                         )
                     )
 
-            # Check if routines table is populated
-            cursor.execute("SELECT COUNT(*) FROM routines")
-            if cursor.fetchone()[0] == 0:
-                for r in ROUTINES:
-                    cursor.execute(
-                        """
-                        INSERT INTO routines (id, title, focus, intensity_tier, duration_min, tags, exercise_ids, description, disclaimer)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            r["id"],
-                            r["title"],
-                            r["focus"],
-                            r["intensity_tier"],
-                            r["duration_min"],
-                            json.dumps(r["tags"]),
-                            json.dumps(r["exercise_ids"]),
-                            r["description"],
-                            r["disclaimer"]
-                        )
+            # Add new curated routines on existing installations without overwriting edits.
+            for r in ROUTINES:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO routines (id, title, focus, intensity_tier, duration_min, tags, exercise_ids, description, disclaimer)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        r["id"],
+                        r["title"],
+                        r["focus"],
+                        r["intensity_tier"],
+                        r["duration_min"],
+                        json.dumps(r["tags"]),
+                        json.dumps(r["exercise_ids"]),
+                        r["description"],
+                        r["disclaimer"]
                     )
+                )
 
             # Check if resource_guides table is populated
             cursor.execute("SELECT COUNT(*) FROM resource_guides")
@@ -362,6 +360,7 @@ class DBManager:
                 query += " AND intensity_tier = ?"
                 params.append(intensity_tier.lower())
 
+            query += " ORDER BY id"
             cursor.execute(query, params)
             rows = cursor.fetchall()
             results = []
@@ -414,6 +413,52 @@ class DBManager:
                 })
 
             return results
+
+    def get_recommended_routines(self, user_id: str = "default_user", limit: int = 3) -> List[Dict[str, Any]]:
+        """Return varied low-intensity routines matched to a user's saved goals and constraints."""
+        user = self.get_user(user_id) or {}
+        flags = set(user.get("orthopedic_flags", []))
+        goals = " ".join(user.get("health_goals", [])).lower()
+
+        if "knee_pain" in flags or any(term in goals for term in ("knee", "patellar")):
+            focus = "knee_rehab"
+        elif "shoulder_impingement" in flags or any(term in goals for term in ("shoulder", "posture", "neck")):
+            focus = "upper_body_mobility"
+        elif any(term in goals for term in ("cardio", "endurance", "stamina")):
+            focus = "cardio_anaerobic"
+        else:
+            focus = "posterior_chain_mobility"
+
+        excluded_tags = set()
+        if "knee_pain" in flags:
+            excluded_tags.update(("deep_flexion", "high_impact"))
+        if "lumbar_stiffness" in flags:
+            excluded_tags.update(("axial_loading", "heavy_spinal_flexion"))
+        if "shoulder_impingement" in flags:
+            excluded_tags.add("overhead_pressing")
+        if user.get("age_band") == "senior":
+            excluded_tags.update(("anaerobic_circuit", "high_intensity"))
+
+        routines = self.query_local_routines(
+            focus=focus,
+            intensity_tier="low",
+            exclude_tags=sorted(excluded_tags)
+        )
+        if not routines and focus != "posterior_chain_mobility":
+            routines = self.query_local_routines(
+                focus="posterior_chain_mobility",
+                intensity_tier="low",
+                exclude_tags=sorted(excluded_tags)
+            )
+
+        if not routines or limit <= 0:
+            return []
+
+        # Rotate the lead recommendation after completed sessions instead of showing
+        # the same first database row every time the profile is opened.
+        offset = user.get("workout_count", 0) % len(routines)
+        routines = routines[offset:] + routines[:offset]
+        return routines[:limit]
 
     def get_local_resource_guides(self, movement_id_or_keyword: str) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
