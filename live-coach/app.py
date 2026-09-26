@@ -8,7 +8,7 @@ Gemini Live sends back speech, a transcript of that speech, and tool calls. The 
 calls drive the UI state machine — the model speaks through audio and acts through
 tools, so the page never has to guess intent from prose.
 """
-import asyncio, base64, io, json, os, traceback, wave
+import asyncio, base64, io, json, os, pathlib, traceback, wave
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,20 @@ from google import genai
 from google.genai import types
 
 from coach import SYSTEM, tools
+
+# Key comes from .env (gitignored) so it never lands in your shell profile or a commit.
+_env = pathlib.Path(__file__).parent / ".env"
+if _env.exists():
+    for _line in _env.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
+if not os.environ.get("GEMINI_API_KEY"):
+    raise SystemExit(
+        "\nNo GEMINI_API_KEY.\n"
+        "  cp .env.example .env   then paste your key into .env\n")
 
 # Exact model IDs from the problem statement. Change them here, nowhere else.
 LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")            # the coach
