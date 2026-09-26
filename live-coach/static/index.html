@@ -194,7 +194,7 @@ body[data-dbg=on] #dbg{display:block}
       <span class="track"><span class="fill" id="micFill"></span></span>
       <b id="micRate">–</b></div>
     <div class="pill">frames <b id="frameCount">0</b></div>
-    <div class="pill">motion <b id="motionVal">0.0</b></div>
+    <div class="pill" id="motionBar" data-hot="no">motion <b id="motionVal">0.0</b></div>
     <div class="profile" title="Profile">MN</div>
   </header>
 
@@ -332,7 +332,7 @@ addEventListener('keydown',e=>{
   }
 });
 
-let ws,stream,micCtx,outCtx,analyser,frameTimer,clockTimer,playHead=0,sources=[];
+let ws,stream,micCtx,outCtx,analyser,frameTimer,motionTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
 // Workout time, not wall time: accumulate only while they're actually working.
 let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
@@ -494,58 +494,83 @@ function downsample(f32,inRate,outRate){
   return out;
 }
 
+let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
+let noise=0.6, repState='quiet', lastRepAt=0, lastMoveAt=0, SENS=1.2;
+
 function startFrames(){
-  const c=document.createElement('canvas'); c.width=512;c.height=384;
-  const g=c.getContext('2d');
-  // Asking the model "are they moving?" across 1.4fps stills gets an agreeable yes.
-  // A pixel diff answers it correctly for free.
-  const m=document.createElement('canvas'); m.width=64;m.height=48;
-  const mg=m.getContext('2d',{willReadFrequently:true});
-  let prev=null,still=0,lastSig=0,moving=false;
-
-  frameTimer=setInterval(()=>{
-    if(ws?.readyState!==1||!camOn)return;
-    if(phase==='demonstrating')return;         // not exercising; don't watch
-    g.drawImage($('cam'),0,0,c.width,c.height);
-    mg.drawImage($('cam'),0,0,m.width,m.height);
-    const px=mg.getImageData(0,0,m.width,m.height).data;
-    const luma=new Uint8Array(m.width*m.height);
-    for(let i=0,j=0;i<px.length;i+=4,j++)
-      luma[j]=(px[i]*.299+px[i+1]*.587+px[i+2]*.114)|0;
-    let score=0;
-    if(prev){let s=0;for(let i=0;i<luma.length;i++)s+=Math.abs(luma[i]-prev[i]);
-      score=s/luma.length}
-    prev=luma;
-    $('motionVal').textContent=score.toFixed(1);
-
-    const inSet = inWorkout && phase!=='demonstrating';
-    // Small-amplitude work (neck rotations, wrist circles) barely moves pixels.
-    // Once a set is under way, believe the set, not the pixel diff.
-    const stillLimit = inSet ? 14 : 5;      // ~10s mid-set vs ~3.5s while chatting
-    const stillGap   = inSet ? 12000 : 8000;
-
-    if(score>MOTION_THRESH){
-      still=0;
-      if(!moving){moving=true;
-        if(inWorkout){L('up','vision: movement resumed');
-          ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}}
-    }else{
-      still++;
-      if(still>=stillLimit && Date.now()-lastSig>stillGap){
-        lastSig=Date.now(); moving=false;
-        // Ground truth, rather than hoping the model notices.
-        L('up',`vision: still for ${((still*FRAME_MS)/1000).toFixed(0)}s`);
-        ws.send(JSON.stringify({t:'text',d:`[VISION: no movement for `+
-          `${((still*FRAME_MS)/1000).toFixed(0)}s — they are standing still, not exercising]`}));
-      }
-    }
-    // Only skip near-duplicate frames when nothing is happening. During a set every
-    // frame matters, however small the movement.
-    if(!inSet && score<=MOTION_THRESH && still%4!==0) return;
-    ws.send(JSON.stringify({t:'frame',d:c.toDataURL('image/jpeg',.5).split(',')[1]}));
-    $('frameCount').textContent=++frames;
-  },FRAME_MS);
+  frameCanvas=document.createElement('canvas'); frameCanvas.width=512; frameCanvas.height=384;
+  frameCtx=frameCanvas.getContext('2d');
+  motionCanvas=document.createElement('canvas'); motionCanvas.width=64; motionCanvas.height=48;
+  motionCtx=motionCanvas.getContext('2d',{willReadFrequently:true});
+  // Two loops at different speeds. Motion is free (a canvas subtraction) so it runs
+  // fast enough to catch a shoulder roll. Frames cost tokens, so they go slowly and
+  // only feed the form watcher.
+  motionTimer=setInterval(sampleMotion,120);
+  frameTimer=setInterval(sendFrame,700);
 }
+
+// ---- rep counting, in the browser ----
+// Reps are periodic: one rep is a burst of movement bracketed by two quiet moments.
+// A threshold crossing with hysteresis catches that for squats and shoulder rolls
+// alike, instantly, with no model round trip to drift or stall.
+function sampleMotion(){
+  if(!camOn || !$('cam').videoWidth) return;
+  motionCtx.drawImage($('cam'),0,0,64,48);
+  const px=motionCtx.getImageData(0,0,64,48).data;
+  const luma=new Uint8Array(64*48);
+  for(let i=0,j=0;i<px.length;i+=4,j++) luma[j]=(px[i]*.299+px[i+1]*.587+px[i+2]*.114)|0;
+  let score=0;
+  if(prevLuma){let t=0;for(let i=0;i<luma.length;i++)t+=Math.abs(luma[i]-prevLuma[i]);
+    score=t/luma.length}
+  prevLuma=luma;
+
+  const hi=noise+SENS, lo=noise+SENS*0.4;
+  $('motionVal').textContent=score.toFixed(1);
+  $('motionBar').dataset.hot=score>hi?'yes':'no';
+  if(score>hi) lastMoveAt=Date.now();
+
+  if(repState==='quiet'){
+    noise=noise*0.97+score*0.03;                 // learn this room's idle noise
+    if(score>hi) repState='active';
+  }else if(score<lo){
+    repState='quiet';
+    const now=Date.now();
+    if(inWorkout && phase!=='demonstrating' && now-lastRepAt>450){
+      lastRepAt=now; countRep();
+    }
+  }
+
+  // The clock only runs while they are actually moving.
+  if(inWorkout && phase!=='demonstrating'){
+    if(Date.now()-lastMoveAt<2500) clockStart(); else clockPause('no movement');
+  }
+}
+
+function countRep(){
+  const n=+$('repN').textContent+1;
+  $('repN').textContent=n;
+  tally.total++; tally.clean++;
+  $('sTotal').textContent=tally.total; $('sClean').textContent=tally.clean;
+  document.querySelector('.repbox').animate(
+    [{scale:1},{scale:1.1},{scale:1}],{duration:200,easing:'ease-out'});
+  ws?.send(JSON.stringify({t:'rep',n}));
+  L('info','rep '+n);
+}
+
+function sendFrame(){
+  if(ws?.readyState!==1||!camOn) return;
+  if(phase==='demonstrating') return;
+  frameCtx.drawImage($('cam'),0,0,512,384);
+  ws.send(JSON.stringify({t:'frame',d:frameCanvas.toDataURL('image/jpeg',.5).split(',')[1]}));
+  $('frameCount').textContent=++frames;
+}
+
+// [ and ] retune rep sensitivity live. Do this once, in your demo spot.
+addEventListener('keydown',e=>{
+  if(/input|textarea/i.test(e.target.tagName))return;
+  if(e.key===']'){SENS=Math.min(6,SENS+0.2);L('info','sensitivity '+SENS.toFixed(1))}
+  if(e.key==='['){SENS=Math.max(.2,SENS-0.2);L('info','sensitivity '+SENS.toFixed(1))}
+});
 
 /* ---------- controls ---------- */
 function toggleMic(){
@@ -559,9 +584,10 @@ function toggleCam(){
   // Camera off means tracking pauses — tell the model, don't let it guess.
   L('up',camOn?'camera on — tracking resumed':'camera off — tracking paused');
   if(camOn){ if(inWorkout) clockStart() } else clockPause('camera off');
-  ws?.send(JSON.stringify({t:'text',d:camOn
-    ?'[VISION: camera back on, tracking resumed]'
-    :'[VISION: camera off — tracking paused, you cannot see them]'}));
+  ws?.send(JSON.stringify({t:'say',d:camOn
+    ?'[Their camera is back on. Form tracking has resumed.]'
+    :'[They turned their camera off, so rep counting and form tracking are paused. '
+     +'Acknowledge it in one short line and carry on talking.]'}));
 }
 function endSession(){
   clockPause('session ended');
@@ -593,8 +619,18 @@ function onMsg(m){
     if(phase==='demonstrating'){L('info','narration finished — handing camera back');
       return resume()}
     $('caption').textContent=''; $('status').textContent='watching'; return}
+  if(m.t==='form')       return onForm(m);
+  if(m.t==='demonstrate'){L('tool','demonstrate — '+(m.error||''));return takeover(m)}
   if(m.t==='tool')       return onTool(m.name,m.args||{});
   if(m.t==='error')      return console.error('[live]',m.d);
+}
+
+// Form verdicts from the parallel gemini-3.8-flash watcher.
+function onForm(v){
+  const c=$('chip');
+  if(v.verdict==='good'){c.dataset.s='good'; c.textContent=v.cue||'good form'; return}
+  c.dataset.s='error'; c.textContent=v.cue||v.error||'check form';
+  tally.fix++; $('sFix').textContent=tally.fix;
 }
 
 // Tool calls are the control plane. This is the entire state machine.
@@ -608,25 +644,14 @@ function onTool(name,a){
     $('repN').textContent='0'; $('repEx').textContent=a.name||'reps';
     $('status').textContent='watching you'; poseTo(guessPose(a.name));
   }
-  if(name==='rep'){
-    $('repN').textContent=+$('repN').textContent+1;
-    tally.total++; if((a.quality||'clean')==='clean')tally.clean++;
-    $('sTotal').textContent=tally.total; $('sClean').textContent=tally.clean;
-    document.querySelector('.repbox').animate(
-      [{scale:1},{scale:1.09},{scale:1}],{duration:230,easing:'ease-out'});
-  }
-  if(name==='form_ok'){$('chip').dataset.s='good';$('chip').textContent=a.note||'good form'}
-  if(name==='form_error'){$('chip').dataset.s='error';$('chip').textContent=a.cue||a.error;
-    tally.fix++; $('sFix').textContent=tally.fix}
   if(name==='end_exercise'){$('chip').dataset.s='';$('chip').textContent='watching';
     B.dataset.counting='off'; stopCycle();
     inWorkout=false; clockPause('exercise finished')}
-  if(name==='demonstrate') takeover(a);
 }
 
 /* ---- THE BEAT ---- */
 async function takeover(a){
-  setPhase('demonstrating'); tally.fix++; $('sFix').textContent=tally.fix;
+  setPhase('demonstrating');
   clockPause('coach is demonstrating');   // they're standing still, not training
   $('bTitle').textContent='Stopping you — '+(a.exercise||'');
   $('bErr').textContent=a.error||'';
@@ -634,11 +659,6 @@ async function takeover(a){
   $('status').textContent='showing you how';
   demoCycle(guessPose(a.exercise));
   L('tool','takeover — '+(a.error||''));
-
-  // Narrate in the coach's own voice over the Live session. A second TTS call
-  // gave the demonstration a different voice, because the TTS model does not
-  // share Live's voice roster and silently falls back when the name is unknown.
-  ws?.send(JSON.stringify({t:'demo_speak',d:a}));
 
   // If the narration never arrives, never strand them on the avatar screen.
   clearTimeout(demoTimer);
@@ -669,7 +689,7 @@ function stopAudio(){
   $('status').textContent='listening';
 }
 function stopAll(){
-  clearInterval(frameTimer); clearInterval(clockTimer); stopCycle(); stopAudio();
+  clearInterval(frameTimer); clearInterval(motionTimer); clearInterval(clockTimer); stopCycle(); stopAudio();
   ws?.close(); stream?.getTracks().forEach(t=>t.stop());
   micCtx?.close(); outCtx?.close(); analyser=null;
   setPhase('idle'); B.dataset.live='off'; B.dataset.counting='off';

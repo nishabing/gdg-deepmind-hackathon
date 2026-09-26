@@ -1,12 +1,16 @@
-"""Live Trainer — one file, one process, one command.
+"""Digital AI Coach -- one process, one page.
 
-    export GEMINI_API_KEY=...
-    uvicorn app:app --port 8000     ->  open http://localhost:8000
+    uvicorn app:app --port 8000     ->  http://localhost:8000
 
-Browser sends mic audio (16k PCM) + camera frames (JPEG, ~1.4/s) over one WebSocket.
-Gemini Live sends back speech, a transcript of that speech, and tool calls. The tool
-calls drive the UI state machine — the model speaks through audio and acts through
-tools, so the page never has to guess intent from prose.
+Three jobs, deliberately split, because one model doing all three was the reason
+nothing was reliable:
+
+  conversation  gemini-3.8-live   voice in, voice out, barge-in. No video.
+  form          gemini-3.8-flash  one frame every ~2.5s during a set, in parallel.
+  reps          the browser       motion-cycle detection. Instant, no API, no drift.
+
+Live never sees video and never counts. That keeps its turns short and stops it
+stalling, and it is why small movements like shoulder rolls now register at all.
 """
 import asyncio, base64, io, json, logging, os, pathlib, time, traceback, wave
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -16,9 +20,9 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from coach import SYSTEM, tools
+from coach import SYSTEM, tools, form_prompt
 
-# Key comes from .env (gitignored) so it never lands in your shell profile or a commit.
+# Key comes from .env (gitignored) so it never lands in a shell profile or a commit.
 _env = pathlib.Path(__file__).parent / ".env"
 if _env.exists():
     for _line in _env.read_text().splitlines():
@@ -26,24 +30,17 @@ if _env.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
-
 if not os.environ.get("GEMINI_API_KEY"):
-    raise SystemExit(
-        "\nNo GEMINI_API_KEY.\n"
-        "  cp .env.example .env   then paste your key into .env\n")
+    raise SystemExit("\nNo GEMINI_API_KEY.\n  put it in .env  ->  GEMINI_API_KEY=...\n")
 
-# Exact model IDs from the problem statement. Change them here, nowhere else.
-LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")            # the coach
-TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")       # avatar narration
-FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")           # plan + script
+LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")
+FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")
+TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")
 VOICE = os.environ.get("GEMINI_VOICE", "Puck")
-# "live"  -> the coach narrates its own demonstration (ONE voice, always consistent)
-# "tts"   -> gemini-3.8-flash-tts speaks it (a second voice; can differ from Live's)
-NARRATION = os.environ.get("NARRATION", "live")
+FORM_EVERY = float(os.environ.get("FORM_EVERY", "2.5"))   # seconds between form checks
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
+                    format="%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("coach")
 
 app = FastAPI()
@@ -56,10 +53,11 @@ CONFIG = types.LiveConnectConfig(
     tools=tools(),
     speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
         prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
-    # Captions, so the demo reads with the sound off.
     output_audio_transcription=types.AudioTranscriptionConfig(),
     input_audio_transcription=types.AudioTranscriptionConfig(),
 )
+FORM_CFG = types.GenerateContentConfig(
+    response_mime_type="application/json", temperature=0.2, max_output_tokens=300)
 
 
 @app.get("/")
@@ -70,102 +68,124 @@ async def index():
 @app.websocket("/live")
 async def live(ws: WebSocket):
     await ws.accept()
+    st = {"exercise": None, "kind": "large", "reps": 0, "frame": None,
+          "active": False, "last_serious": 0.0, "demonstrating": False}
+    counters = {"audio": 0, "frames": 0}
+
     try:
         async with client.aio.live.connect(model=LIVE, config=CONFIG) as session:
-            log.info("live session open  model=%s voice=%s narration=%s",
-                     LIVE, VOICE, NARRATION)
+            log.info("live open  live=%s flash=%s voice=%s", LIVE, FLASH, VOICE)
             await ws.send_json({"t": "ready"})
-            stats = {"audio": 0, "audio_bytes": 0, "frames": 0, "replies": 0}
-            t_start = time.time()
 
-            frames = 0
+            async def say(text: str):
+                """Hand the coach something to say, in its own voice."""
+                await session.send_client_content(
+                    turns=types.Content(role="user", parts=[types.Part(text=text)]))
 
+            # ---------- browser -> here ----------
             async def up():
-                nonlocal frames
                 while True:
                     m = json.loads(await ws.receive_text())
-                    if m["t"] == "audio":
-                        pcm = base64.b64decode(m["d"])
+                    t = m["t"]
+                    if t == "audio":
                         await session.send_realtime_input(audio=types.Blob(
-                            data=pcm, mime_type="audio/pcm;rate=16000"))
-                        stats["audio"] += 1
-                        stats["audio_bytes"] += len(pcm)
-                        if stats["audio"] % 50 == 0:
-                            secs = stats["audio_bytes"] / 2 / 16000
-                            log.info("UP audio  %d chunks  %.1fs of speech sent",
-                                     stats["audio"], secs)
-                    elif m["t"] == "frame":
-                        raw = base64.b64decode(m["d"])
-                        await session.send_realtime_input(video=types.Blob(
-                            data=raw, mime_type="image/jpeg"))
-                        frames += 1
-                        stats["frames"] = frames
-                        # If this stays at 0 the coach is reacting to your voice alone.
-                        if frames % 20 == 0:
-                            log.info("UP video  %d frames  last=%dB", frames, len(raw))
-                    elif m["t"] == "text":
-                        # Ground truth from the client's motion detector.
-                        log.info("UP text   %s", m["d"])
-                        await session.send_realtime_input(text=m["d"])
-                    elif m["t"] == "demo_speak":
-                        # Narrate the correction in the coach's own voice. Keeping this
-                        # on the Live session is the only way to guarantee one voice.
-                        d = m["d"]
-                        log.info("TOOL demonstrate -> narrating in-session")
-                        await session.send_client_content(turns=types.Content(
-                            role="user", parts=[types.Part(text=(
-                                "[You have just stopped them and taken over the screen. "
-                                "You are now demonstrating the correct movement. Say what "
-                                "a coach says while showing it: name the error, show the "
-                                "fix, give one cue. Three short sentences, no numbers.]\n"
-                                f"Exercise: {d.get('exercise')}\n"
-                                f"Their error: {d.get('error')}\n"
-                                f"The correction: {d.get('correction')}"))]))
-                    elif m["t"] == "resume":
-                        log.info("UP resume (demonstration finished)")
-                        await session.send_client_content(turns=types.Content(
-                            role="user", parts=[types.Part(
-                                text="[demonstration over, they are back on camera]")]))
+                            data=base64.b64decode(m["d"]),
+                            mime_type="audio/pcm;rate=16000"))
+                        counters["audio"] += 1
+                        if counters["audio"] % 80 == 0:
+                            log.info("UP audio %d chunks", counters["audio"])
+                    elif t == "frame":
+                        # Held for the form watcher. Never forwarded to Live.
+                        st["frame"] = base64.b64decode(m["d"])
+                        counters["frames"] += 1
+                        if counters["frames"] % 25 == 0:
+                            log.info("UP video %d frames (for form watcher)",
+                                     counters["frames"])
+                    elif t == "rep":
+                        st["reps"] = m.get("n", st["reps"] + 1)
+                    elif t == "resume":
+                        st["demonstrating"] = False
+                    elif t == "say":
+                        await say(m["d"])
 
+            # ---------- parallel form watcher (gemini-3.8-flash) ----------
+            async def watch_form():
+                while True:
+                    await asyncio.sleep(FORM_EVERY)
+                    if not (st["active"] and st["frame"] and not st["demonstrating"]):
+                        continue
+                    try:
+                        r = await client.aio.models.generate_content(
+                            model=FLASH, config=FORM_CFG,
+                            contents=[types.Part(text=form_prompt(st["exercise"], st["reps"])),
+                                      types.Part(inline_data=types.Blob(
+                                          data=st["frame"], mime_type="image/jpeg"))])
+                        v = json.loads(r.text or "{}")
+                    except Exception as e:
+                        log.warning("form check failed: %s", str(e)[:120])
+                        continue
+
+                    verdict = v.get("verdict", "good")
+                    log.info("FORM %-7s %s", verdict, v.get("cue", ""))
+                    await ws.send_json({"t": "form", **v})
+
+                    if verdict == "serious" and time.time() - st["last_serious"] > 20:
+                        # THE BEAT: stop them, take the screen, demonstrate.
+                        st["last_serious"] = time.time()
+                        st["demonstrating"] = True
+                        await ws.send_json({"t": "demonstrate",
+                                            "exercise": st["exercise"],
+                                            "error": v.get("error", ""),
+                                            "correction": v.get("correction", "")})
+                        await say(
+                            "[You have just stopped them and taken over the screen to "
+                            "demonstrate. Say it like a coach showing the movement: name "
+                            "the error, show the fix, one cue. Three short sentences.]\n"
+                            f"Exercise: {st['exercise']}\n"
+                            f"Error: {v.get('error','')}\n"
+                            f"Fix: {v.get('correction','')}")
+                    elif verdict == "minor" and v.get("cue"):
+                        await say(f"[FORM] {v['cue']}")
+
+            # ---------- here -> browser ----------
             async def down():
                 while True:
                     async for r in session.receive():
                         if r.data:
-                            stats["replies"] += 1
-                            if stats["replies"] % 40 == 1:
-                                log.info("DOWN audio (coach speaking)")
                             await ws.send_json({"t": "audio",
                                                 "d": base64.b64encode(r.data).decode()})
                         sc = r.server_content
                         if sc:
                             if sc.output_transcription and sc.output_transcription.text:
-                                log.debug("DOWN says %r", sc.output_transcription.text)
                                 await ws.send_json({"t": "caption",
                                                     "d": sc.output_transcription.text})
                             if sc.input_transcription and sc.input_transcription.text:
-                                # THE LINE THAT MATTERS: if this never appears, your
-                                # microphone audio is not reaching the model.
-                                log.info("HEARD YOU %r", sc.input_transcription.text)
+                                log.info("HEARD %r", sc.input_transcription.text)
                                 await ws.send_json({"t": "heard",
                                                     "d": sc.input_transcription.text})
                             if sc.interrupted:
+                                log.info("barge-in")
                                 await ws.send_json({"t": "interrupted"})
                             if sc.turn_complete:
                                 await ws.send_json({"t": "turn_complete"})
                         if r.tool_call:
                             out = []
                             for fc in r.tool_call.function_calls:
-                                log.info("TOOL  %s(%s)", fc.name,
-                                         json.dumps(dict(fc.args or {}))[:160])
-                                await ws.send_json({"t": "tool", "name": fc.name,
-                                                    "args": dict(fc.args or {})})
+                                a = dict(fc.args or {})
+                                log.info("TOOL %s %s", fc.name, json.dumps(a)[:140])
+                                if fc.name == "start_exercise":
+                                    st.update(exercise=a.get("name"), reps=0, active=True,
+                                              kind=a.get("kind", "large"))
+                                elif fc.name == "end_exercise":
+                                    st["active"] = False
+                                await ws.send_json({"t": "tool", "name": fc.name, "args": a})
                                 out.append(types.FunctionResponse(
                                     id=fc.id, name=fc.name, response={"ok": True}))
                             # Must answer or the model stalls waiting on us.
                             await session.send_tool_response(function_responses=out)
 
-            a, b = asyncio.create_task(up()), asyncio.create_task(down())
-            done, pending = await asyncio.wait({a, b}, return_when=asyncio.FIRST_EXCEPTION)
+            tasks = [asyncio.create_task(f()) for f in (up, down, watch_form)]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for t in pending:
                 t.cancel()
             for t in done:
@@ -186,49 +206,32 @@ class DemoIn(BaseModel):
     exercise: str
     error: str
     correction: str
-    focus: str | None = None
 
 
 def _wav(pcm: bytes, rate: int = 24000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-        w.writeframes(pcm)
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(pcm)
     return buf.getvalue()
 
 
 @app.post("/demo_narration")
 async def demo_narration(d: DemoIn):
-    """The avatar's demonstration voice. Scripted with Flash, spoken with Flash TTS —
-    a fixed-length clip the avatar animation can sync against, which a streaming
-    conversational turn cannot give you."""
-    s = await client.aio.models.generate_content(
-        model=FLASH,
-        contents=f"""Write what a trainer says while demonstrating correct form, after
-stopping someone mid-set. Three short sentences, max 45 words. Name the error, show the
-fix, give one cue. Spoken aloud: no lists, no numbers. Plain text only.
-
-Exercise: {d.exercise}
-Their error: {d.error}
-The correction: {d.correction}""",
-        config=types.GenerateContentConfig(temperature=0.6, max_output_tokens=200))
-    script = (s.text or d.correction).strip()
-
+    """Kept for reference. Unused by default: the TTS model does not share Live's voice
+    roster, so routing narration here made the coach change voice mid-session."""
     a = await client.aio.models.generate_content(
-        model=TTS,
-        contents=f"Say this like a coach who stopped you to help, calm and "
-                 f"encouraging: {script}",
+        model=TTS, contents=f"Say like a coach helping: {d.correction}",
         config=types.GenerateContentConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)))))
     pcm = a.candidates[0].content.parts[0].inline_data.data
-    return {"script": script, "wav_b64": base64.b64encode(_wav(pcm)).decode()}
+    return {"wav_b64": base64.b64encode(_wav(pcm)).decode()}
 
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "live": LIVE, "tts": TTS, "flash": FLASH}
+    return {"ok": True, "live": LIVE, "flash": FLASH, "form_every": FORM_EVERY}
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
