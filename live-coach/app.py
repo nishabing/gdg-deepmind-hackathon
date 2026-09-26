@@ -37,6 +37,9 @@ LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")            # the coach
 TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")       # avatar narration
 FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")           # plan + script
 VOICE = os.environ.get("GEMINI_VOICE", "Puck")
+# "live"  -> the coach narrates its own demonstration (ONE voice, always consistent)
+# "tts"   -> gemini-3.8-flash-tts speaks it (a second voice; can differ from Live's)
+NARRATION = os.environ.get("NARRATION", "live")
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -69,7 +72,8 @@ async def live(ws: WebSocket):
     await ws.accept()
     try:
         async with client.aio.live.connect(model=LIVE, config=CONFIG) as session:
-            log.info("live session open  model=%s voice=%s", LIVE, VOICE)
+            log.info("live session open  model=%s voice=%s narration=%s",
+                     LIVE, VOICE, NARRATION)
             await ws.send_json({"t": "ready"})
             stats = {"audio": 0, "audio_bytes": 0, "frames": 0, "replies": 0}
             t_start = time.time()
@@ -103,6 +107,20 @@ async def live(ws: WebSocket):
                         # Ground truth from the client's motion detector.
                         log.info("UP text   %s", m["d"])
                         await session.send_realtime_input(text=m["d"])
+                    elif m["t"] == "demo_speak":
+                        # Narrate the correction in the coach's own voice. Keeping this
+                        # on the Live session is the only way to guarantee one voice.
+                        d = m["d"]
+                        log.info("TOOL demonstrate -> narrating in-session")
+                        await session.send_client_content(turns=types.Content(
+                            role="user", parts=[types.Part(text=(
+                                "[You have just stopped them and taken over the screen. "
+                                "You are now demonstrating the correct movement. Say what "
+                                "a coach says while showing it: name the error, show the "
+                                "fix, give one cue. Three short sentences, no numbers.]\n"
+                                f"Exercise: {d.get('exercise')}\n"
+                                f"Their error: {d.get('error')}\n"
+                                f"The correction: {d.get('correction')}"))]))
                     elif m["t"] == "resume":
                         log.info("UP resume (demonstration finished)")
                         await session.send_client_content(turns=types.Content(

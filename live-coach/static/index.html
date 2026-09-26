@@ -335,7 +335,7 @@ addEventListener('keydown',e=>{
 let ws,stream,micCtx,outCtx,analyser,frameTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
 // Workout time, not wall time: accumulate only while they're actually working.
-let activeMs=0,runningSince=null,inWorkout=false;
+let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
 let micOn=true,camOn=true;
 const tally={clean:0,total:0,fix:0};
 const setPhase=p=>{phase=p;B.dataset.phase=p};
@@ -589,8 +589,10 @@ function onMsg(m){
     return e.textContent=(e.textContent+m.d).slice(-170)}
   if(m.t==='heard')      return $('heard').textContent='you: '+m.d;
   if(m.t==='interrupted')return stopAudio();                 // barge-in
-  if(m.t==='turn_complete'){$('caption').textContent='';
-    $('status').textContent=phase==='demonstrating'?'demonstrating':'watching';return}
+  if(m.t==='turn_complete'){
+    if(phase==='demonstrating'){L('info','narration finished — handing camera back');
+      return resume()}
+    $('caption').textContent=''; $('status').textContent='watching'; return}
   if(m.t==='tool')       return onTool(m.name,m.args||{});
   if(m.t==='error')      return console.error('[live]',m.d);
 }
@@ -631,18 +633,20 @@ async function takeover(a){
   $('caption').textContent=a.correction||'';
   $('status').textContent='showing you how';
   demoCycle(guessPose(a.exercise));
-  try{
-    const r=await fetch('/demo_narration',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(a)});
-    const {script,wav_b64}=await r.json();
-    $('caption').textContent=script||a.correction;
-    const audio=new Audio('data:audio/wav;base64,'+wav_b64);
-    // Route through the analyser so the avatar's mouth moves for this clip too.
-    try{outCtx.createMediaElementSource(audio).connect(analyser)}catch(e){}
-    audio.onended=resume; await audio.play();
-  }catch(e){console.error('[demo]',e); setTimeout(resume,5000)}  // never strand them
+  L('tool','takeover — '+(a.error||''));
+
+  // Narrate in the coach's own voice over the Live session. A second TTS call
+  // gave the demonstration a different voice, because the TTS model does not
+  // share Live's voice roster and silently falls back when the name is unknown.
+  ws?.send(JSON.stringify({t:'demo_speak',d:a}));
+
+  // If the narration never arrives, never strand them on the avatar screen.
+  clearTimeout(demoTimer);
+  demoTimer=setTimeout(()=>{ if(phase==='demonstrating'){L('warn','narration timed out');
+    resume()} },14000);
 }
 function resume(){
+  clearTimeout(demoTimer);
   stopCycle(); setPhase('working'); $('caption').textContent='';
   if(inWorkout) clockStart();
   $('status').textContent='watching you'; ws?.send(JSON.stringify({t:'resume'}));
