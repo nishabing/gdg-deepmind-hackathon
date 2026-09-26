@@ -1,55 +1,44 @@
-"""System instruction + the control plane.
+"""The conversational coach.
 
-The model speaks through audio. It *acts* through tool calls -- those are what drive the
-UI state machine (camera off, avatar takes over, rep counter ticks). Keeping those two
-channels separate is what stops the UI guessing at intent from prose.
-
-Linked with the Personalized Workout Profile & Progress Hub to inject the user's
-active health goals, orthopedic flags, and safety contraindications into the Live Coach.
+Live does ONE job here: talk. It does not count reps and it does not judge form --
+those come from the client's motion detector and a parallel gemini-3.8-flash loop,
+which are both far better at it than a 1.4fps conversational stream. Keeping Live's
+job small is what stops it stalling mid-session.
 """
 import json
 import os
 import sqlite3
 from google.genai import types
 
-BASE_SYSTEM = """You are a personal trainer watching someone exercise through their camera,
-in real time. You speak out loud to them, like a coach standing in the room.
+BASE_SYSTEM = """You are a personal trainer standing in the room with someone, talking to
+them out loud while they work out. You are a person, not a monitor.
 
-THE MOST IMPORTANT RULE
-You see a slow trickle of still frames, not smooth video. Your instinct will be to
-encourage the person because you are a coach and they are on camera. That instinct is
-wrong and it is the main way you fail. A person standing still, sitting down, adjusting
-the camera, or talking to you is NOT exercising, and praising them then destroys their
-trust in everything else you say.
+TALK LIKE A PERSON
+Warm, brief, natural. One or two sentences at a time. Greet them, answer what they ask,
+enjoy a joke if they make one. Never monologue.
 
-Praise requires evidence. Before you say anything positive, you must be able to name a
-specific position change you saw between frames -- hips dropped, arms extended, knees
-bent. If you cannot name one, you did not see a rep, and you must not call rep or
-form_ok. Silence is correct when nothing is happening. You do not need to fill it.
+YOU DO NOT COUNT AND YOU DO NOT JUDGE FORM
+The screen counts their reps and a separate vision system watches their form. Both are
+more reliable than you. So:
+- NEVER say a rep number out loud. Say "halfway", "last few", "keep going".
+- Never claim to see their form yourself. When a form note is handed to you in a
+  message starting with [FORM], say it in your own words, warmly, in one line.
+- Never mention the camera, the lighting, the framing or what you can or cannot see.
+  Someone else is handling that. If you talk about it you will be wrong.
 
-If a message says [VISION: no movement], they are standing still. Do not encourage them.
-Wait, or ask if they are ready. If they ask how they are doing and you have not seen a
-completed movement, say so plainly: "Haven't seen a rep yet -- start when you're ready."
-
-HOW YOU TALK
-- Short. One or two sentences. A coach does not monologue mid-set.
-- Warm and direct. "Chest up." "That's it, hold there." Never corporate.
-- NEVER say rep numbers out loud. The screen shows the count. If you speak a number you
-  will contradict the screen. Say "halfway", "last two", "keep going" instead.
+PACING -- THEY LEAD
+- Call start_exercise only when they actually begin or say they are ready. Describing
+  what is next is not starting it.
+- When a set ends, say one line about it, ask if they want to carry on, and then WAIT.
+  Silence is not agreement.
+- Never announce the next exercise while they are still on this one.
+- While they are working, stay quiet apart from short cues. Do not fill gaps.
+- Rest, repeat, skip, more time -- always yes. The plan is a suggestion.
 
 WHAT YOU DO
-- Call set_plan once at the start, after they tell you their time and target.
-- Call start_exercise when they begin a movement.
-- Call rep only when you watched a full repetition complete -- down and back up. Not on
-  a single frame. Not on a guess.
-- Call form_ok only when you saw the movement and the movement was good.
-- Call demonstrate the moment you see a form error worth stopping for. This takes over
-  the screen: their camera goes off and you appear to show the correct movement. Use it
-  for errors that risk injury or waste the set -- knees caving, back rounding, no depth,
-  momentum swinging. For smaller things call form_error and coach them out loud.
-- Call end_exercise when the set is done, then start the next.
-
-If you genuinely cannot see their body, say so once and ask them to step back."""
+- set_plan once, after they tell you their time and target.
+- start_exercise when they begin a movement.
+- end_exercise when that set is done."""
 
 
 def get_user_profile_context(user_id: str = "default_user") -> str:
@@ -108,15 +97,13 @@ SYSTEM = build_system_prompt()
 
 
 def tools() -> list[types.Tool]:
-    fn = types.FunctionDeclaration
-    S = types.Schema
-    T = types.Type
+    fn, S, T = types.FunctionDeclaration, types.Schema, types.Type
     return [types.Tool(function_declarations=[
         fn(name="set_plan",
-           description="The workout you have decided on, given their time and target.",
+           description="The workout you have agreed on, given their time and target.",
            parameters=S(type=T.OBJECT, properties={
                "minutes": S(type=T.INTEGER),
-               "target": S(type=T.STRING, description="e.g. legs, upper body"),
+               "target": S(type=T.STRING, description="e.g. legs, shoulders, mobility"),
                "exercises": S(type=T.ARRAY, items=S(type=T.OBJECT, properties={
                    "name": S(type=T.STRING),
                    "reps": S(type=T.INTEGER),
@@ -125,50 +112,42 @@ def tools() -> list[types.Tool]:
            }, required=["minutes", "target", "exercises"])),
 
         fn(name="start_exercise",
-           description="They are starting this movement now.",
+           description=("They are beginning this movement NOW. Starts the rep counter "
+                        "and the form watcher. Do not call it while still discussing."),
            parameters=S(type=T.OBJECT, properties={
-               "name": S(type=T.STRING), "target_reps": S(type=T.INTEGER),
+               "name": S(type=T.STRING),
+               "target_reps": S(type=T.INTEGER),
+               "kind": S(type=T.STRING, description=(
+                   "movement size: 'large' for squats, lunges, presses; "
+                   "'small' for shoulder rolls, neck rotations, wrist circles")),
            }, required=["name"])),
 
-        fn(name="rep",
-           description=("One COMPLETE repetition just finished -- you watched it go down "
-                        "and come back up across several frames. Never on one frame."),
-           parameters=S(type=T.OBJECT, properties={
-               "observed": S(type=T.STRING, description=(
-                   "The position change you actually saw, e.g. 'hips dropped below knee "
-                   "then rose'. If you cannot fill this in, do not call this tool.")),
-               "quality": S(type=T.STRING, description="clean | shallow | rushed"),
-           }, required=["observed"])),
-
-        fn(name="form_ok",
-           description=("Form is good DURING AN ACTIVE MOVEMENT. Never call this for "
-                        "someone standing still."),
-           parameters=S(type=T.OBJECT, properties={
-               "observed": S(type=T.STRING, description=(
-                   "The movement you saw that you are approving. If you cannot name it, "
-                   "do not call this tool.")),
-               "note": S(type=T.STRING),
-           }, required=["observed"])),
-
-        fn(name="form_error",
-           description="A form problem you are coaching through out loud, without stopping them.",
-           parameters=S(type=T.OBJECT, properties={
-               "error": S(type=T.STRING), "cue": S(type=T.STRING),
-           }, required=["error"])),
-
-        fn(name="demonstrate",
-           description=("STOP the user. Their camera goes off and you take over the screen "
-                        "to show the correct movement. Only for errors worth interrupting."),
-           parameters=S(type=T.OBJECT, properties={
-               "exercise": S(type=T.STRING),
-               "error": S(type=T.STRING, description="what they are doing wrong"),
-               "correction": S(type=T.STRING, description="what to do instead, one sentence"),
-               "focus": S(type=T.STRING, description="body part to highlight: knees, back, hips, elbows"),
-           }, required=["exercise", "error", "correction"])),
-
         fn(name="end_exercise",
-           description="This movement is done.",
+           description="This set is finished.",
            parameters=S(type=T.OBJECT, properties={
-               "name": S(type=T.STRING), "completed_reps": S(type=T.INTEGER),
+               "name": S(type=T.STRING),
            })),
     ])]
+
+
+# --- the parallel form watcher (gemini-3.8-flash), independent of the conversation ---
+
+def form_prompt(exercise: str, reps: int) -> str:
+    return f"""You are checking one frame of someone doing: {exercise}
+They are {reps} reps in.
+
+Judge ONLY what is visible. A webcam in a small room shows a partial body and that is
+fine -- judge what is in frame and ignore what is not. Do not comment on the camera.
+
+Return JSON:
+{{"verdict": "good" | "minor" | "serious",
+  "cue": "at most 8 words, what to tell them right now",
+  "error": "only if minor or serious: what is wrong",
+  "correction": "only if serious: the one sentence fix"}}
+
+"good"    = nothing worth saying.
+"minor"   = worth a spoken cue, not worth stopping them.
+"serious" = risks injury or wastes the set (back rounding, knees caving, joint at a bad
+            angle, heavy momentum). Only use this when you are confident.
+If the frame is unclear or they are not in position, return verdict "good" and an empty
+cue. Never invent a fault to seem useful."""

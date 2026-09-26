@@ -13,7 +13,7 @@ body{margin:0;height:100vh;overflow:hidden;background:var(--bg);color:var(--txt)
 .app{display:grid;grid-template-rows:60px 1fr;height:100vh}
 
 /* ---------- header ---------- */
-header{display:flex;align-items:center;gap:14px;padding:0 22px;
+header{display:flex;align-items:center;gap:14px;padding:0 22px;overflow:hidden;
   border-bottom:1px solid var(--line);background:var(--panel)}
 .logo{display:flex;align-items:center;gap:10px;font-weight:680;font-size:16px;
   letter-spacing:-.02em}
@@ -89,6 +89,12 @@ body[data-cam=off] #cam{opacity:.06;filter:grayscale(1)}
 .camoff{position:absolute;inset:0;display:none;place-items:center;color:var(--dim);
   font-size:13px;text-align:center;line-height:1.7}
 body[data-cam=off] .camoff{display:grid}
+.pausetag{position:absolute;left:50%;top:50%;translate:-50% -50%;display:none;
+  padding:10px 22px;border-radius:999px;background:#2a1218cc;border:1px solid #5e2530;
+  color:#ff8d98;font:12px/1 ui-monospace,monospace;letter-spacing:.16em;
+  backdrop-filter:blur(10px);z-index:2}
+body[data-paused=on] .pausetag{display:block}
+body[data-paused=on] .repbox{opacity:.35}
 .tl{position:absolute;left:16px;top:14px;display:flex;gap:8px}
 .tr{position:absolute;right:16px;top:14px;display:flex;gap:8px}
 .tag{display:flex;align-items:center;gap:6px;background:#060810cc;backdrop-filter:blur(12px);
@@ -129,7 +135,8 @@ body[data-counting=on] .repbox{display:flex}
 .btn.off{background:#2a1218;border-color:#5e2530;color:#ff8d98}
 .btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.9;
   stroke-linecap:round;stroke-linejoin:round}
-.hint{margin-left:auto;font-size:11px;color:#39404e;text-align:right;line-height:1.5}
+.hint{margin-left:auto;font-size:11px;color:#39404e;text-align:right;
+  line-height:1.5;min-width:0;overflow:hidden}
 
 /* ---------- summary ---------- */
 .summary{padding:6px 16px 15px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
@@ -184,7 +191,8 @@ body[data-dbg=on] #dbg{display:block}
   color:var(--dim);display:flex;justify-content:space-between}
 </style>
 
-<body data-phase="idle" data-live="off" data-counting="off" data-cam="on" data-report="off">
+<body data-phase="idle" data-live="off" data-counting="off" data-cam="on"
+      data-report="off" data-paused="off">
 <div class="app">
 
   <header>
@@ -194,8 +202,8 @@ body[data-dbg=on] #dbg{display:block}
       <span class="track"><span class="fill" id="micFill"></span></span>
       <b id="micRate">–</b></div>
     <div class="pill">frames <b id="frameCount">0</b></div>
-    <div class="pill">motion <b id="motionVal">0.0</b></div>
-    <div class="profile" title="View Profile & Progress" onclick="window.location.href='/profile'" style="cursor:pointer">👤</div>
+    <div class="pill" id="motionBar" data-hot="no">motion <b id="motionVal">0.0</b></div>
+    <div class="profile" title="Profile">MN</div>
   </header>
 
   <main>
@@ -250,7 +258,8 @@ body[data-dbg=on] #dbg{display:block}
     <div class="col">
       <section class="card camcard">
         <video id="cam" muted playsinline></video>
-        <div class="camoff">Camera off<br><span style="font-size:11.5px">tracking paused</span></div>
+        <div class="camoff">Camera off<br><span style="font-size:11.5px">session paused</span></div>
+        <div class="pausetag">PAUSED</div>
         <div class="tl"><div class="tag"><i></i> YOU · LIVE</div></div>
         <div class="tr"><button class="endbtn" onclick="endSession()">END</button></div>
         <div class="repbox"><b id="repN">0</b><span id="repEx">reps</span></div>
@@ -309,7 +318,7 @@ body[data-dbg=on] #dbg{display:block}
 <script>
 const MIC_RATE=16000, OUT_RATE=24000, FRAME_MS=700;
 // Tune against your room: watch the motion readout still, then moving.
-const MOTION_THRESH=2.2;
+const MOTION_THRESH=1.4;
 const STREAK_DAY=3, STREAK_LEN=7;          // which day of the plan we're on
 const $=id=>document.getElementById(id);
 const B=document.body;
@@ -334,10 +343,10 @@ addEventListener('keydown',e=>{
   }
 });
 
-let ws,stream,micCtx,outCtx,analyser,frameTimer,clockTimer,playHead=0,sources=[];
+let ws,stream,micCtx,outCtx,analyser,frameTimer,motionTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
 // Workout time, not wall time: accumulate only while they're actually working.
-let activeMs=0,runningSince=null,inWorkout=false;
+let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
 let micOn=true,camOn=true;
 const tally={clean:0,total:0,fix:0};
 const setPhase=p=>{phase=p;B.dataset.phase=p};
@@ -411,70 +420,40 @@ const guessPose=n=>{n=(n||'').toLowerCase();
 })();
 
 /* ---------- session ---------- */
+let starting=false;
 async function begin(){
-  const msgEl = $('gateMsg');
-  const btn = $('startBtn');
-  if (msgEl) { msgEl.style.display = 'none'; msgEl.textContent = ''; }
-  if (btn) { btn.disabled = true; btn.textContent = 'Connecting...'; }
+  // Two clicks meant two sockets, two Live sessions and two voices talking over
+  // each other. One session, ever.
+  if(starting || ws){ L('warn','already started — ignoring'); return; }
+  starting=true;
+  document.querySelector('.gate button').disabled=true;
+  try{ await connect(); }
+  catch(e){ starting=false; document.querySelector('.gate button').disabled=false;
+    L('warn','start failed: '+e.message); throw e; }
+}
 
-  try {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 960, height: 720 },
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
-      });
-      $('cam').srcObject = stream;
-      await $('cam').play();
-    } catch (mediaErr) {
-      console.warn("Camera/mic access error:", mediaErr);
-      if (msgEl) {
-        msgEl.style.display = 'block';
-        msgEl.textContent = 'Camera/mic permission error: ' + (mediaErr.message || mediaErr.name || 'Access denied');
-      }
-      if (btn) { btn.disabled = false; btn.textContent = 'Start session'; }
-      return;
-    }
+async function connect(){
+  stream=await navigator.mediaDevices.getUserMedia({
+    video:{width:960,height:720},
+    // Without this the coach hears itself through the speakers and cuts itself off.
+    audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
+  $('cam').srcObject=stream; await $('cam').play();
 
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}/live`);
-    ws.onmessage = e => onMsg(JSON.parse(e.data));
-    ws.onclose = ev => {
-      $('status').textContent = 'disconnected';
-      L('warn', 'websocket closed');
-    };
-    ws.onerror = () => L('warn', 'websocket error');
+  ws=new WebSocket(`ws://${location.host}/live`);
+  ws.onmessage=e=>onMsg(JSON.parse(e.data));
+  ws.onclose=()=>{B.dataset.live='off';$('status').textContent='disconnected';
+    ws=null; starting=false; L('warn','websocket closed')};
+  ws.onerror=()=>L('warn','websocket error');
+  await new Promise(r=>ws.onopen=r);
 
-    await new Promise(resolve => {
-      const t = setTimeout(resolve, 2000);
-      ws.onopen = () => { clearTimeout(t); resolve(); };
-      ws.onerror = () => { clearTimeout(t); resolve(); };
-    });
-
-    try {
-      outCtx = new AudioContext({ sampleRate: OUT_RATE });
-      analyser = outCtx.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.connect(outCtx.destination);
-      playHead = outCtx.currentTime;
-    } catch (e) {
-      console.warn('AudioContext error:', e);
-    }
-
-    startMic();
-    startFrames();
-    clockTimer = setInterval(paintClock, 500);
-    B.dataset.live = 'on';
-    setPhase('listening');
-    $('status').textContent = 'listening';
-    L('info', 'session started — speak now');
-  } catch (err) {
-    console.error('Session start error:', err);
-    if (msgEl) {
-      msgEl.style.display = 'block';
-      msgEl.textContent = 'Could not start session: ' + err.message;
-    }
-    if (btn) { btn.disabled = false; btn.textContent = 'Start session'; }
-  }
+  outCtx=new AudioContext({sampleRate:OUT_RATE});
+  analyser=outCtx.createAnalyser(); analyser.fftSize=256;
+  analyser.connect(outCtx.destination);
+  playHead=outCtx.currentTime;
+  startMic(); startFrames();
+  clockTimer=setInterval(paintClock,500);   // ticks, but only counts while running
+  B.dataset.live='on'; setPhase('listening'); $('status').textContent='listening';
+  L('info','session started — speak now');
 }
 
 const elapsedMs=()=>activeMs+(runningSince?Date.now()-runningSince:0);
@@ -548,66 +527,132 @@ function downsample(f32,inRate,outRate){
   return out;
 }
 
+let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
+// Reps come from measured movement, nothing else. Tuned against simulated traces
+// for stillness, auto-exposure drift, fidgeting, head turns, squats, shoulder rolls
+// and very small movements. SENS is a MULTIPLE of the room's measured noise, not an
+// absolute, so the tuning carries across rooms and lighting.
+let noise=0.5, smooth=0.5, SENS=1.7;
+const MIN_HI=6;            // 720ms of real movement. A fidget is a blip; a rep lasts.
+let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
+
 function startFrames(){
-  const c=document.createElement('canvas'); c.width=512;c.height=384;
-  const g=c.getContext('2d');
-  // Asking the model "are they moving?" across 1.4fps stills gets an agreeable yes.
-  // A pixel diff answers it correctly for free.
-  const m=document.createElement('canvas'); m.width=64;m.height=48;
-  const mg=m.getContext('2d',{willReadFrequently:true});
-  let prev=null,still=0,lastSig=0,moving=false;
-
-  frameTimer=setInterval(()=>{
-    if(ws?.readyState!==1||!camOn)return;
-    if(phase==='demonstrating')return;         // not exercising; don't watch
-    g.drawImage($('cam'),0,0,c.width,c.height);
-    mg.drawImage($('cam'),0,0,m.width,m.height);
-    const px=mg.getImageData(0,0,m.width,m.height).data;
-    const luma=new Uint8Array(m.width*m.height);
-    for(let i=0,j=0;i<px.length;i+=4,j++)
-      luma[j]=(px[i]*.299+px[i+1]*.587+px[i+2]*.114)|0;
-    let score=0;
-    if(prev){let s=0;for(let i=0;i<luma.length;i++)s+=Math.abs(luma[i]-prev[i]);
-      score=s/luma.length}
-    prev=luma;
-    $('motionVal').textContent=score.toFixed(1);
-
-    if(score>MOTION_THRESH){
-      still=0;
-      if(!moving){moving=true;L('up','vision: movement resumed');
-        ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}
-    }else{
-      still++;
-      if(still>=3&&Date.now()-lastSig>3000){
-        lastSig=Date.now(); moving=false;
-        // Ground truth, rather than hoping the model notices.
-        L('up',`vision: still for ${((still*FRAME_MS)/1000).toFixed(0)}s`);
-        ws.send(JSON.stringify({t:'text',d:`[VISION: no movement for `+
-          `${((still*FRAME_MS)/1000).toFixed(0)}s — they are standing still, not exercising]`}));
-      }
-    }
-    if(score<=MOTION_THRESH&&still%4!==0)return;   // near-duplicates are waste
-    ws.send(JSON.stringify({t:'frame',d:c.toDataURL('image/jpeg',.5).split(',')[1]}));
-    $('frameCount').textContent=++frames;
-  },FRAME_MS);
+  frameCanvas=document.createElement('canvas'); frameCanvas.width=512; frameCanvas.height=384;
+  frameCtx=frameCanvas.getContext('2d');
+  motionCanvas=document.createElement('canvas'); motionCanvas.width=64; motionCanvas.height=48;
+  motionCtx=motionCanvas.getContext('2d',{willReadFrequently:true});
+  motionTimer=setInterval(sampleMotion,120);
+  frameTimer=setInterval(sendFrame,700);
 }
+
+function sampleMotion(){
+  if(!camOn || !$('cam').videoWidth) return;
+  motionCtx.drawImage($('cam'),0,0,64,48);
+  const px=motionCtx.getImageData(0,0,64,48).data;
+  const n=64*48, luma=new Uint8Array(n);
+  for(let i=0,j=0;i<px.length;i+=4,j++) luma[j]=(px[i]*.299+px[i+1]*.587+px[i+2]*.114)|0;
+
+  let score=0;
+  if(prevLuma){
+    // Remove the frame-wide mean shift first. A webcam pointed at a bright window
+    // rides its auto-exposure up and down, lifting every pixel at once -- not motion,
+    // but indistinguishable from it unless you subtract it.
+    let sum=0; for(let i=0;i<n;i++) sum+=luma[i]-prevLuma[i];
+    const mean=sum/n;
+    let t=0; for(let i=0;i<n;i++) t+=Math.abs(luma[i]-prevLuma[i]-mean);
+    score=t/n;
+  }
+  prevLuma=luma;
+  smooth = smooth*0.55 + score*0.45;
+
+  // Learn the floor only while quiet -- letting the movement raise it makes each rep
+  // harder to detect than the last.
+  if(repState==='quiet'){ noise=noise*0.97+smooth*0.03; noise=Math.max(noise,0.15); }
+  const hi=noise*SENS, lo=noise*1.55;
+
+  $('motionVal').textContent=smooth.toFixed(1);
+  $('motionBar').dataset.hot = smooth>hi ? 'yes':'no';
+  if(smooth>hi) lastMoveAt=Date.now();
+
+  if(Date.now()<calibUntil){ $('chip').textContent='calibrating...'; return; }
+
+  if(repState==='quiet'){
+    if(smooth>hi){ above++; if(above>=2){repState='active'; hiN=above;} }
+    else above=0;
+  }else{
+    if(smooth>hi) hiN++;            // time genuinely moving, not the smoothing tail
+    if(smooth<lo){
+      const now=Date.now();
+      const real = hiN>=MIN_HI && now-lastRepAt>450;
+      repState='quiet'; above=0;
+      if(inWorkout && phase!=='demonstrating' && !paused && real){
+        lastRepAt=now; countRep(hiN);
+      }
+      hiN=0;
+    }
+  }
+
+  if(inWorkout && phase!=='demonstrating' && !paused){
+    if(Date.now()-lastMoveAt<2500) clockStart(); else clockPause('no movement');
+  }
+}
+
+function countRep(dur){
+  const n=+$('repN').textContent+1;
+  $('repN').textContent=n;
+  tally.total++; tally.clean++;
+  $('sTotal').textContent=tally.total; $('sClean').textContent=tally.clean;
+  document.querySelector('.repbox').animate(
+    [{scale:1},{scale:1.1},{scale:1}],{duration:200,easing:'ease-out'});
+  ws?.send(JSON.stringify({t:'rep',n}));
+  L('info',`rep ${n}  (${(dur*0.12).toFixed(1)}s moving, floor ${noise.toFixed(2)})`);
+}
+
+function sendFrame(){
+  if(ws?.readyState!==1||!camOn) return;
+  if(phase==='demonstrating') return;
+  frameCtx.drawImage($('cam'),0,0,512,384);
+  ws.send(JSON.stringify({t:'frame',d:frameCanvas.toDataURL('image/jpeg',.5).split(',')[1]}));
+  $('frameCount').textContent=++frames;
+}
+
+// [ and ] retune rep sensitivity live. Do this once, in your demo spot.
+addEventListener('keydown',e=>{
+  if(/input|textarea/i.test(e.target.tagName))return;
+  if(e.key===']'){SENS=Math.max(1.2,SENS-0.15);L('info','MORE sensitive: x'+SENS.toFixed(2))}
+  if(e.key==='['){SENS=Math.min(6,SENS+0.15);L('info','LESS sensitive: x'+SENS.toFixed(2))}
+});
 
 /* ---------- controls ---------- */
 function toggleMic(){
-  micOn=!micOn; L('up',micOn?'mic unmuted':'mic MUTED — not sending audio');
+  micOn=!micOn; L('up',micOn?'mic unmuted':'mic MUTED');
   $('micBtn').classList.toggle('off',!micOn);
-  $('status').textContent=micOn?'listening':'muted';
+  applyPause();
 }
 function toggleCam(){
   camOn=!camOn; B.dataset.cam=camOn?'on':'off';
   $('camBtn').classList.toggle('off',!camOn);
-  // Camera off means tracking pauses — tell the model, don't let it guess.
-  L('up',camOn?'camera on — tracking resumed':'camera off — tracking paused');
-  if(camOn){ if(inWorkout) clockStart() } else clockPause('camera off');
-  ws?.send(JSON.stringify({t:'text',d:camOn
-    ?'[VISION: camera back on, tracking resumed]'
-    :'[VISION: camera off — tracking paused, you cannot see them]'}));
+  L('up',camOn?'camera on':'camera off');
+  applyPause();
 }
+// Camera or mic off is a PAUSE. Everything stops -- counting, the clock, the form
+// watcher -- and the coach waits quietly instead of telling them to carry on.
+let paused=false;
+function applyPause(){
+  const want = !camOn || !micOn;
+  if(want===paused) return;
+  paused=want;
+  B.dataset.paused = paused?'on':'off';
+  if(paused){
+    clockPause(!camOn?'camera off':'mic muted');
+    $('chip').dataset.s=''; $('chip').textContent='paused';
+    $('status').textContent='paused';
+  }else{
+    $('status').textContent=inWorkout?'watching you':'listening';
+  }
+  ws?.send(JSON.stringify({t:'pause',on:paused,why:!camOn?'camera':'microphone'}));
+}
+
 function endSession(){
   clockPause('session ended');
   const ms=elapsedMs();
@@ -632,7 +677,11 @@ function endSession(){
 
 /* ---------- wire ---------- */
 function onMsg(m){
-  if(m.t==='ready')      L('info','server ready — Live session open');
+  if(m.t==='ready'){
+    L('info',`server ready — session #${m.sid}, ${m.open} open`);
+    if(m.open>1) L('warn',`${m.open} LIVE SESSIONS OPEN — two coaches are talking. `+
+      'Close the other tab and reload.');
+  }
   if(m.t==='heard')      L('down','HEARD YOU: '+m.d);
   if(m.t==='caption')    L('down','says: '+m.d);
   if(m.t==='tool')       L('tool',m.name+' '+JSON.stringify(m.args||{}).slice(0,120));
@@ -644,10 +693,22 @@ function onMsg(m){
     return e.textContent=(e.textContent+m.d).slice(-170)}
   if(m.t==='heard')      return $('heard').textContent='you: '+m.d;
   if(m.t==='interrupted')return stopAudio();                 // barge-in
-  if(m.t==='turn_complete'){$('caption').textContent='';
-    $('status').textContent=phase==='demonstrating'?'demonstrating':'watching';return}
+  if(m.t==='turn_complete'){
+    if(phase==='demonstrating'){L('info','narration finished — handing camera back');
+      return resume()}
+    $('caption').textContent=''; $('status').textContent='watching'; return}
+  if(m.t==='form')       return onForm(m);
+  if(m.t==='demonstrate'){L('tool','demonstrate — '+(m.error||''));return takeover(m)}
   if(m.t==='tool')       return onTool(m.name,m.args||{});
   if(m.t==='error')      { const c=$('caption'); if(c) c.textContent='⚠️ '+m.d; return console.error('[live]',m.d); }
+}
+
+// Form verdicts from the parallel gemini-3.8-flash watcher.
+function onForm(v){
+  const c=$('chip');
+  if(v.verdict==='good'){c.dataset.s='good'; c.textContent=v.cue||'good form'; return}
+  c.dataset.s='error'; c.textContent=v.cue||v.error||'check form';
+  tally.fix++; $('sFix').textContent=tally.fix;
 }
 
 // Tool calls are the control plane. This is the entire state machine.
@@ -657,47 +718,34 @@ function onTool(name,a){
   }
   if(name==='start_exercise'){
     setPhase('working'); B.dataset.counting='on';
-    inWorkout=true; clockStart();
+    inWorkout=true; calibUntil=Date.now()+1500; noise=0.5;
+    L('info','calibrating motion floor — hold still for a second');
     $('repN').textContent='0'; $('repEx').textContent=a.name||'reps';
     $('status').textContent='watching you'; poseTo(guessPose(a.name));
   }
-  if(name==='rep'){
-    $('repN').textContent=+$('repN').textContent+1;
-    tally.total++; if((a.quality||'clean')==='clean')tally.clean++;
-    $('sTotal').textContent=tally.total; $('sClean').textContent=tally.clean;
-    document.querySelector('.repbox').animate(
-      [{scale:1},{scale:1.09},{scale:1}],{duration:230,easing:'ease-out'});
-  }
-  if(name==='form_ok'){$('chip').dataset.s='good';$('chip').textContent=a.note||'good form'}
-  if(name==='form_error'){$('chip').dataset.s='error';$('chip').textContent=a.cue||a.error;
-    tally.fix++; $('sFix').textContent=tally.fix}
   if(name==='end_exercise'){$('chip').dataset.s='';$('chip').textContent='watching';
     B.dataset.counting='off'; stopCycle();
     inWorkout=false; clockPause('exercise finished')}
-  if(name==='demonstrate') takeover(a);
 }
 
 /* ---- THE BEAT ---- */
 async function takeover(a){
-  setPhase('demonstrating'); tally.fix++; $('sFix').textContent=tally.fix;
+  setPhase('demonstrating');
   clockPause('coach is demonstrating');   // they're standing still, not training
   $('bTitle').textContent='Stopping you — '+(a.exercise||'');
   $('bErr').textContent=a.error||'';
   $('caption').textContent=a.correction||'';
   $('status').textContent='showing you how';
   demoCycle(guessPose(a.exercise));
-  try{
-    const r=await fetch('/demo_narration',{method:'POST',
-      headers:{'Content-Type':'application/json'},body:JSON.stringify(a)});
-    const {script,wav_b64}=await r.json();
-    $('caption').textContent=script||a.correction;
-    const audio=new Audio('data:audio/wav;base64,'+wav_b64);
-    // Route through the analyser so the avatar's mouth moves for this clip too.
-    try{outCtx.createMediaElementSource(audio).connect(analyser)}catch(e){}
-    audio.onended=resume; await audio.play();
-  }catch(e){console.error('[demo]',e); setTimeout(resume,5000)}  // never strand them
+  L('tool','takeover — '+(a.error||''));
+
+  // If the narration never arrives, never strand them on the avatar screen.
+  clearTimeout(demoTimer);
+  demoTimer=setTimeout(()=>{ if(phase==='demonstrating'){L('warn','narration timed out');
+    resume()} },14000);
 }
 function resume(){
+  clearTimeout(demoTimer);
   stopCycle(); setPhase('working'); $('caption').textContent='';
   if(inWorkout) clockStart();
   $('status').textContent='watching you'; ws?.send(JSON.stringify({t:'resume'}));
@@ -720,8 +768,9 @@ function stopAudio(){
   $('status').textContent='listening';
 }
 function stopAll(){
-  clearInterval(frameTimer); clearInterval(clockTimer); stopCycle(); stopAudio();
-  ws?.close(); stream?.getTracks().forEach(t=>t.stop());
+  starting=false;
+  clearInterval(frameTimer); clearInterval(motionTimer); clearInterval(clockTimer); stopCycle(); stopAudio();
+  ws?.close(); ws=null; stream?.getTracks().forEach(t=>t.stop());
   micCtx?.close(); outCtx?.close(); analyser=null;
   setPhase('idle'); B.dataset.live='off'; B.dataset.counting='off';
 }
