@@ -69,7 +69,8 @@ async def index():
 async def live(ws: WebSocket):
     await ws.accept()
     st = {"exercise": None, "kind": "large", "reps": 0, "frame": None,
-          "active": False, "last_serious": 0.0, "demonstrating": False}
+          "active": False, "last_serious": 0.0, "demonstrating": False,
+          "paused": False}
     counters = {"audio": 0, "frames": 0}
 
     try:
@@ -103,6 +104,22 @@ async def live(ws: WebSocket):
                                      counters["frames"])
                     elif t == "rep":
                         st["reps"] = m.get("n", st["reps"] + 1)
+                    elif t == "pause":
+                        # Camera or mic off is a pause, not a hint. Stop the form
+                        # watcher and tell the coach to wait rather than coach on.
+                        st["paused"] = bool(m.get("on"))
+                        st["frame"] = None          # never judge a stale frame
+                        log.info("PAUSE %s (%s)", st["paused"], m.get("why"))
+                        if st["paused"]:
+                            await say(
+                                f"[The session is PAUSED -- they turned their "
+                                f"{m.get('why','camera')} off. Rep counting and form "
+                                f"tracking have stopped. Say one short line to "
+                                f"acknowledge, do NOT tell them to continue, then stay "
+                                f"quiet and wait until you are told it resumed.]")
+                        else:
+                            await say("[They are back. Session resumed. One short "
+                                      "line, then carry on.]")
                     elif t == "resume":
                         st["demonstrating"] = False
                     elif t == "say":
@@ -112,7 +129,9 @@ async def live(ws: WebSocket):
             async def watch_form():
                 while True:
                     await asyncio.sleep(FORM_EVERY)
-                    if not (st["active"] and st["frame"] and not st["demonstrating"]):
+                    if st["paused"] or st["demonstrating"]:
+                        continue
+                    if not (st["active"] and st["frame"]):
                         continue
                     try:
                         r = await client.aio.models.generate_content(
