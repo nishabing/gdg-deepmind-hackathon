@@ -101,6 +101,11 @@ body[data-paused=on] .repbox{opacity:.35}
   border:1px solid #ffffff14;padding:7px 11px;border-radius:9px;
   font:10.5px/1 ui-monospace,monospace;letter-spacing:.07em;color:#c5d0e2}
 .tag i{width:5px;height:5px;border-radius:50%;background:var(--bad);animation:blink 1.4s infinite}
+.tag b{color:#fff;font-weight:600}
+#framingTag[data-f=full]{border-color:#1e5334;color:#8ee0a6}
+#framingTag[data-f=upper]{border-color:#4a3c1c;color:#e8c07d}
+#framingTag[data-f=head]{border-color:#4a3c1c;color:#e8c07d}
+#framingTag[data-f=none]{border-color:#5e2530;color:#ff8d98}
 @keyframes blink{50%{opacity:.2}}
 .endbtn{background:#2a1218;border:1px solid #5e2530;color:#ff8d98;padding:7px 15px;
   border-radius:9px;font-size:12px;font-weight:600;cursor:pointer}
@@ -248,6 +253,8 @@ body[data-dbg=on] #dbg{display:block}
         <h2>Workout streak</h2>
         <div class="days" id="days"></div>
         <div class="goals" id="goals">
+        <p style="margin-bottom:6px"><b>Can coach right now:</b>
+           <span id="framingCan" style="color:#626b80">waiting for the camera</span></p>
           <p><b>Tell it your goals out loud</b> — "I've got ten minutes, let's do legs."
              It builds the plan and starts watching.</p>
         </div>
@@ -260,7 +267,9 @@ body[data-dbg=on] #dbg{display:block}
         <video id="cam" muted playsinline></video>
         <div class="camoff">Camera off<br><span style="font-size:11.5px">session paused</span></div>
         <div class="pausetag">PAUSED</div>
-        <div class="tl"><div class="tag"><i></i> YOU · LIVE</div></div>
+        <div class="tl"><div class="tag"><i></i> YOU · LIVE</div>
+          <div class="tag" id="framingTag" data-f="">IN VIEW
+            <b id="framing">—</b></div></div>
         <div class="tr"><button class="endbtn" onclick="endSession()">END</button></div>
         <div class="repbox"><b id="repN">0</b><span id="repEx">reps</span></div>
         <div class="chip" id="chip">watching</div>
@@ -301,7 +310,10 @@ body[data-dbg=on] #dbg{display:block}
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
      <b style="color:#626b80">D</b> log · <b style="color:#626b80">] [</b> rep
      sensitivity · <b style="color:#626b80">, .</b> rep length ·
-     <b style="color:#626b80">'</b> mic gate (off)</small>
+     <b style="color:#626b80">'</b> mic gate ·
+     <b style="color:#626b80">- =</b> rep spacing</small>
+     <br><small style="color:#39404e">Stay quiet for two seconds after starting —
+     it measures the room.</small>
 </div>
 
 <div class="report">
@@ -347,10 +359,12 @@ addEventListener('keydown',e=>{
 
 let ws,stream,micCtx,outCtx,analyser,frameTimer,motionTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
-// Mic noise gate, OFF by default. Gating on level assumes the speaker is well
-// above the room; in a loud hall they often are not, so it silenced the user along
-// with the chatter. Turn it on with ' only if the room is actually getting through.
-let gateOn=false, micFloor=0.004, gateUntil=0, GATE_MULT=2.2; const preroll=[];
+// Mic noise gate. The first version guessed the room's level and cut the user off.
+// This one MEASURES it: two seconds of the actual room at session start, floor set
+// at the 95th percentile of that. Press ' to disable if it ever gets in the way.
+let gateOn=true, micFloor=0.02, gateUntil=0, GATE_MULT=1.8;
+let gateCalib=[], gateCalibUntil=0, gateOpen=false;
+const preroll=[];
 // Workout time, not wall time: accumulate only while they're actually working.
 let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
 let micOn=true,camOn=true;
@@ -497,6 +511,7 @@ function startMic(){
   micCtx.resume();                       // Chrome can hand back a suspended context
   const inRate=micCtx.sampleRate;
   L('info',`mic context ${inRate}Hz -> downsampling to ${MIC_RATE}Hz`);
+  gateCalibUntil=Date.now()+2000;   // measure the room before sending anything
   $('micRate').textContent=inRate/1000+'k';
 
   const src=micCtx.createMediaStreamSource(stream);
@@ -522,16 +537,34 @@ function startMic(){
     // Noise gate. In a crowded hall the room's conversation reaches the mic, and
     // the model transcribes it, answers it, and treats it as the user interrupting.
     // Only the person in front of the laptop should get through.
+    const now=Date.now();
+    if(now<gateCalibUntil){          // measuring the room; send nothing yet
+      gateCalib.push(rms);
+      $('micBar').dataset.hot='no';
+      return;
+    }
+    if(gateCalib.length){
+      const sorted=[...gateCalib].sort((a,b)=>a-b);
+      micFloor=Math.max(0.006, sorted[Math.floor(sorted.length*0.95)]);
+      gateCalib=[];
+      SLOG(`mic floor measured: ${micFloor.toFixed(4)} `+
+           `(opens above ${(micFloor*GATE_MULT).toFixed(4)})`);
+    }
+
     if(gateOn){
-      const now=Date.now();
-      if(rms>micFloor*GATE_MULT+0.002) gateUntil=now+900;   // generous hangover
-      else if(rms<micFloor*2) micFloor=micFloor*0.995+rms*0.005;
-      if(now>=gateUntil){
-        preroll.push(i16); if(preroll.length>8) preroll.shift();
+      // While the coach is talking its voice leaks back in and reads as the user
+      // interrupting. Raise the bar then, so real barge-in still works but echo does not.
+      const duck = sources.length ? 2.5 : 1;
+      if(rms > micFloor*GATE_MULT*duck) gateUntil=now+800;   // hangover keeps words whole
+      const open = now<gateUntil;
+      if(open!==gateOpen){ gateOpen=open;
+        if(open) SLOG(`mic OPEN (${rms.toFixed(4)})`); }
+      if(!open){
+        preroll.push(i16); if(preroll.length>6) preroll.shift();
         $('micBar').dataset.hot='no';
         return;
       }
-      // Gate just opened: send the lead-in so the first syllable is not clipped.
+      // Send the lead-in so the first syllable is not clipped.
       for(const c of preroll) ws.send(JSON.stringify({t:'audio',d:b64(c.buffer)}));
       preroll.length=0;
     }
@@ -567,8 +600,22 @@ let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
 // and very small movements. SENS is a MULTIPLE of the room's measured noise, not an
 // absolute, so the tuning carries across rooms and lighting.
 let noise=0.5, smooth=0.5, SENS=1.7;
-let MIN_HI=4;              // samples of real movement (x120ms) before it counts
+let MIN_HI=3;              // samples of real movement (x120ms) before it counts
+// Most movements are out AND back: a tilt right then centre is two bursts but one
+// rep. This gap swallows the return so the pair counts once. Lower it with - if a
+// genuinely fast exercise is being under-counted.
+let REFRACTORY=1200;
 let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
+let calibSamples=[], lastReject=0;
+// A tilt pauses at each end, so it makes clean bursts of motion. A rotation does
+// not -- it is continuous, the magnitude never drops, and the burst detector sees
+// one long burst and reports one rep. So while movement is continuous we count the
+// CENTROID of the motion swinging side to side instead: one swing, one rep.
+let cx=0.5, cxBase=0.5, cxSide=0, continuous=false;
+const CX_BAND=0.09, CONT_AFTER=14;   // 14 samples ~ 1.7s of unbroken movement
+// Everything the rep detector decides goes to the server log too, so one log
+// shows the whole picture instead of half of it living in the browser.
+const SLOG=m=>{ L('info',m); ws?.send(JSON.stringify({t:'log',d:m})); };
 
 function startFrames(){
   frameCanvas=document.createElement('canvas'); frameCanvas.width=512; frameCanvas.height=384;
@@ -586,44 +633,84 @@ function sampleMotion(){
   const n=64*48, luma=new Uint8Array(n);
   for(let i=0,j=0;i<px.length;i+=4,j++) luma[j]=(px[i]*.299+px[i+1]*.587+px[i+2]*.114)|0;
 
-  let score=0;
+  let score=0, wsum=0, wx=0;
   if(prevLuma){
     // Remove the frame-wide mean shift first. A webcam pointed at a bright window
     // rides its auto-exposure up and down, lifting every pixel at once -- not motion,
     // but indistinguishable from it unless you subtract it.
     let sum=0; for(let i=0;i<n;i++) sum+=luma[i]-prevLuma[i];
     const mean=sum/n;
-    let t=0; for(let i=0;i<n;i++) t+=Math.abs(luma[i]-prevLuma[i]-mean);
+    let t=0;
+    for(let i=0;i<n;i++){
+      const d=Math.abs(luma[i]-prevLuma[i]-mean);
+      t+=d; wsum+=d; wx+=d*(i%64);        // horizontal centre of where motion is
+    }
     score=t/n;
+    if(wsum>0) cx = cx*0.5 + (wx/wsum/63)*0.5;
   }
   prevLuma=luma;
   smooth = smooth*0.55 + score*0.45;
 
   // Learn the floor only while quiet -- letting the movement raise it makes each rep
   // harder to detect than the last.
-  if(repState==='quiet'){ noise=noise*0.97+smooth*0.03; noise=Math.max(noise,0.15); }
+  // Only learn from genuinely quiet moments. Between fast reps the smoothing tail
+  // is still high, and feeding that back in walks the floor upwards until the last
+  // reps of a set cannot clear it -- the floor tripled across one set before this.
+  if(repState==='quiet' && smooth < noise*1.5){
+    noise=noise*0.98+smooth*0.02; noise=Math.max(noise,0.15);
+  }
   const hi=noise*SENS, lo=noise*1.55;
 
   $('motionVal').textContent=smooth.toFixed(1)+'/'+hi.toFixed(1);
   $('motionBar').dataset.hot = smooth>hi ? 'yes':'no';
   if(smooth>hi) lastMoveAt=Date.now();
 
-  if(Date.now()<calibUntil){ $('chip').textContent='calibrating...'; return; }
+  if(Date.now()<calibUntil){
+    $('chip').textContent='calibrating...';
+    calibSamples.push(smooth);
+    return;
+  }
+  if(calibSamples.length){
+    // Take a low percentile, not the average. If they were already moving while we
+    // measured, the average is their movement and every rep afterwards is invisible.
+    const sorted=[...calibSamples].sort((a,b)=>a-b);
+    noise=Math.max(0.15, sorted[Math.floor(sorted.length*0.25)]*1.25);
+    calibSamples=[];
+    repState='quiet'; above=0; hiN=0;      // discard anything seen while measuring
+    SLOG(`rep floor calibrated: ${noise.toFixed(2)} (fires above ${(noise*SENS).toFixed(2)})`);
+  }
 
   if(repState==='quiet'){
     if(smooth>hi){ above++; if(above>=2){repState='active'; hiN=above;} }
     else above=0;
   }else{
     if(smooth>hi) hiN++;            // time genuinely moving, not the smoothing tail
+
+    // Unbroken movement means a continuous exercise. Count its swings.
+    if(hiN>=CONT_AFTER){
+      if(!continuous){ continuous=true; cxBase=cx; cxSide=0;
+        SLOG('continuous movement — counting swings, not bursts'); }
+      cxBase = cxBase*0.97 + cx*0.03;
+      const d = cx-cxBase, now=Date.now();
+      if(cxSide<=0 && d>CX_BAND){
+        cxSide=1;
+        if(inWorkout && !paused && now-lastRepAt>REFRACTORY){ lastRepAt=now; countRep(hiN); }
+      } else if(cxSide>=0 && d<-CX_BAND) cxSide=-1;
+    }
+
     if(smooth<lo){
+      continuous=false;
       const now=Date.now();
-      const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>450;
+      const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>REFRACTORY;
       repState='quiet'; above=0;
       if(inWorkout && phase!=='demonstrating' && !paused){
         if(longEnough && spaced){ lastRepAt=now; countRep(hiN); }
-        else L('warn',`burst NOT counted — ${hiN} samples above threshold, need `+
-          `${MIN_HI}${spaced?'':'; also too soon after last rep'}. `+
-          `Press , to accept shorter reps, ] to lower the threshold.`);
+        else if(hiN>0 && Date.now()-lastReject>2000){
+          lastReject=Date.now();
+          SLOG(`REP REJECTED: moved for ${(hiN*0.12).toFixed(2)}s, need `+
+            `${(MIN_HI*0.12).toFixed(2)}s${spaced?'':' (also too soon after last)'} `+
+            `| floor ${noise.toFixed(2)} threshold ${(noise*SENS).toFixed(2)}`);
+        }
       }
       hiN=0;
     }
@@ -642,7 +729,7 @@ function countRep(dur){
   document.querySelector('.repbox').animate(
     [{scale:1},{scale:1.1},{scale:1}],{duration:200,easing:'ease-out'});
   ws?.send(JSON.stringify({t:'rep',n}));
-  L('info',`rep ${n}  (${(dur*0.12).toFixed(1)}s moving, floor ${noise.toFixed(2)})`);
+  SLOG(`REP ${n} — ${(dur*0.12).toFixed(2)}s of movement (floor ${noise.toFixed(2)})`);
 }
 
 function sendFrame(){
@@ -661,12 +748,16 @@ addEventListener('keydown',e=>{
   if(e.key==='['){SENS=Math.min(6,SENS+0.15);L('info','LESS sensitive: x'+SENS.toFixed(2))}
   // ; ' adjust the mic noise gate for the room you are actually in
   // ' toggles the mic gate; ; loosens it while it is on
-  if(e.key==="'"){gateOn=!gateOn; micFloor=0.004; gateUntil=0; preroll.length=0;
+  if(e.key==="'"){gateOn=!gateOn; gateUntil=0; preroll.length=0;
     L('warn',`mic gate ${gateOn?'ON — room noise filtered':'OFF — everything sent'}`)}
   if(e.key===';'){GATE_MULT=Math.max(1.2,GATE_MULT-0.3);
     L('info',`gate looser: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
   if(e.key===','){MIN_HI=Math.max(2,MIN_HI-1);
     L('info',`shorter reps ok: ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
+  if(e.key==='-'){REFRACTORY=Math.max(300,REFRACTORY-200);
+    L('info',`reps can be ${REFRACTORY}ms apart (counts faster)`)}
+  if(e.key==='='){REFRACTORY=Math.min(3000,REFRACTORY+200);
+    L('info',`reps must be ${REFRACTORY}ms apart (counts slower)`)}
   if(e.key==='.'){MIN_HI=Math.min(12,MIN_HI+1);
     L('info',`reps must last ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
 });
@@ -745,6 +836,7 @@ function onMsg(m){
     if(phase==='demonstrating'){L('info','narration finished — handing camera back');
       return resume()}
     $('caption').textContent=''; $('status').textContent='watching'; return}
+  if(m.t==='framing')    return onFraming(m.framing);
   if(m.t==='form')       return onForm(m);
   if(m.t==='demonstrate'){L('tool','demonstrate — '+(m.error||''));return takeover(m)}
   if(m.t==='tool')       return onTool(m.name,m.args||{});
@@ -752,6 +844,20 @@ function onMsg(m){
 }
 
 // Form verdicts from the parallel gemini-3.8-flash watcher.
+// What the camera can actually see. Shown plainly so it is obvious why the coach
+// is offering shoulder rolls rather than squats.
+const FRAMING={head:['head & shoulders','neck, shoulders, upper back'],
+               upper:['upper body','arms, shoulders, torso'],
+               full:['full body','anything'],
+               none:['not in frame','step into view']};
+function onFraming(f){
+  const [label,can]=FRAMING[f]||['—',''];
+  $('framing').textContent=label;
+  $('framingCan').textContent=can;
+  $('framingTag').dataset.f=f;
+  L('down',`framing: ${f} (${can})`);
+}
+
 function onForm(v){
   const c=$('chip');
   L('down',`form ${v.verdict} [${v.framing||'?'}] ${v.observed||''} -> ${v.cue||''}`);

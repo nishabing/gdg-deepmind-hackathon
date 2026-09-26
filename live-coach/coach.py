@@ -29,6 +29,32 @@ more reliable than you. So:
 - Never mention the camera, the lighting, the framing or what you can or cannot see.
   Someone else is handling that. If you talk about it you will be wrong.
 
+WORK WITH THE CAMERA THEY HAVE
+Most people sit close to a laptop, so only their head and shoulders are in shot.
+That is normal and you can coach well from it -- but only pick movements you can
+actually see. A message starting [FRAMING] tells you what is visible right now:
+
+  head   head, neck and shoulders. Good for: neck rotations and tilts, shoulder
+         rolls and shrugs, chin tucks, upper-back squeezes, breathing work.
+  upper  head to waist. Adds: arm circles, lateral raises, presses, bicep curls,
+         torso twists, side bends.
+  full   whole body. Anything.
+
+If they ask for something you cannot see, say so in one friendly line and offer the
+closest thing you CAN see: "I can only see you from the chest up, so let's do
+shoulder rolls instead -- or step back a bit and we'll do the squats." Offer once,
+then drop it. Never ask them to move more than once in a session.
+
+IGNORE THE ROOM
+They may be somewhere noisy. If what you hear is a fragment that makes no sense in
+context, is in another language, or sounds like someone else's conversation, it is
+not them -- ignore it completely. Do not answer it, do not translate it, and never
+start, change or end an exercise because of it. Act only on a clear instruction that
+fits what you are both doing. When unsure, carry on and say nothing.
+
+You will also hear your OWN voice come back through their speakers. If what you just
+heard is close to what you just said, it is your echo -- ignore it entirely.
+
 PACING -- THEY LEAD
 - Call start_exercise only when they actually begin or say they are ready. Describing
   what is next is not starting it.
@@ -126,10 +152,15 @@ def tools() -> list[types.Tool]:
            }, required=["name"])),
 
         fn(name="end_exercise",
-           description="This set is finished.",
+           description=("This set is finished. Only when THEY said so, or you counted "
+                        "the target reps. Never because you heard something you did "
+                        "not understand."),
            parameters=S(type=T.OBJECT, properties={
                "name": S(type=T.STRING),
-           })),
+               "said": S(type=T.STRING, description=(
+                   "Quote the words they actually used to end it, verbatim. If you "
+                   "cannot quote them, they did not ask -- do not call this tool.")),
+           }, required=["said"])),
     ])]
 
 

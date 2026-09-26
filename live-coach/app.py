@@ -21,7 +21,8 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from coach import build_system_prompt, tools, get_user_profile_context, SYSTEM
+from coach import (build_system_prompt, tools, get_user_profile_context, SYSTEM,
+                   form_prompt)
 from database.db_manager import DBManager
 from concierge.health_goals import HealthGoalsManager
 
@@ -210,7 +211,8 @@ async def live(ws: WebSocket):
                     "other. The page opened a second socket.", SESSIONS["n"])
     st = {"exercise": None, "kind": "large", "reps": 0, "frame": None,
           "active": False, "last_serious": 0.0, "demonstrating": False,
-          "paused": False, "last_cue": "", "framing_warned": False}
+          "paused": False, "last_cue": "", "framing_warned": False,
+          "framing": None}
     counters = {"audio": 0, "frames": 0}
 
     user_id = ws.query_params.get("user_id", "default_user")
@@ -248,6 +250,9 @@ async def live(ws: WebSocket):
                                      counters["frames"])
                     elif t == "rep":
                         st["reps"] = m.get("n", st["reps"] + 1)
+                        log.info("REP %d  (%s)", st["reps"], st["exercise"])
+                    elif t == "log":
+                        log.info("CLIENT %s", m.get("d", ""))
                     elif t == "pause":
                         # Camera or mic off is a pause, not a hint. Stop the form
                         # watcher and tell the coach to wait rather than coach on.
@@ -297,13 +302,24 @@ async def live(ws: WebSocket):
                              v.get("framing", "?"), v.get("observed", "")[:48], cue)
                     await ws.send_json({"t": "form", **v})
 
+                    # Tell the coach what is visible whenever it changes, so it can
+                    # choose movements that fit the shot instead of nagging them to move.
+                    fr = v.get("framing")
+                    if fr and fr != st["framing"]:
+                        st["framing"] = fr
+                        await ws.send_json({"t": "framing", "framing": fr})
+                        await say(f"[FRAMING] {fr}")
+
                     if verdict == "unseen":
-                        # Say this once, not every 2.5 seconds.
+                        # Once per session, not every 2.5 seconds.
                         if not st["framing_warned"]:
                             st["framing_warned"] = True
-                            await say(f"[FRAMING] {cue or 'you cannot see them properly'}")
+                            await say(
+                                f"[FRAMING] You cannot see what this exercise needs "
+                                f"({cue or 'out of frame'}). Offer them the closest "
+                                f"movement you CAN see at '{fr}' framing, or to step "
+                                f"back. One friendly line, then move on.")
                         continue
-                    st["framing_warned"] = False
 
                     if verdict == "serious" and time.time() - st["last_serious"] > 20:
                         # THE BEAT: stop them, take the screen, demonstrate.
@@ -355,6 +371,17 @@ async def live(ws: WebSocket):
                                     st.update(exercise=a.get("name"), reps=0, active=True,
                                               kind=a.get("kind", "large"))
                                 elif fc.name == "end_exercise":
+                                    # It must be able to quote them. Room noise cannot
+                                    # be quoted, so it cannot end a set any more.
+                                    said = (a.get("said") or "").strip()
+                                    if not said:
+                                        log.warning("end_exercise IGNORED — no quote")
+                                        out.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={"ok": False, "error":
+                                                      "Quote what they said, or keep going."}))
+                                        continue
+                                    log.info("end_exercise on: %r", said)
                                     st["active"] = False
                                 await ws.send_json({"t": "tool", "name": fc.name, "args": a})
                                 out.append(types.FunctionResponse(
