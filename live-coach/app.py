@@ -37,6 +37,7 @@ LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")
 FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")
 TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")
 VOICE = os.environ.get("GEMINI_VOICE", "Puck")
+LANG  = os.environ.get("GEMINI_LANG", "en-US")   # it drifted into Spanish without this
 FORM_EVERY = float(os.environ.get("FORM_EVERY", "2.5"))   # seconds between form checks
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -52,8 +53,10 @@ CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
     system_instruction=types.Content(parts=[types.Part(text=SYSTEM)]),
     tools=tools(),
-    speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
-        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
+    speech_config=types.SpeechConfig(
+        language_code=LANG,
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
     output_audio_transcription=types.AudioTranscriptionConfig(),
     input_audio_transcription=types.AudioTranscriptionConfig(),
 )

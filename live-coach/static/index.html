@@ -298,7 +298,8 @@ body[data-dbg=on] #dbg{display:block}
      when your form slips.</p>
   <button onclick="begin()">Start session</button>
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
-     Press <b style="color:#626b80">D</b> any time for the debug log.</small>
+     <b style="color:#626b80">D</b> debug log · <b style="color:#626b80">] [</b> rep
+     sensitivity · <b style="color:#626b80">, .</b> rep length</small>
 </div>
 
 <div class="report">
@@ -521,7 +522,7 @@ let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
 // and very small movements. SENS is a MULTIPLE of the room's measured noise, not an
 // absolute, so the tuning carries across rooms and lighting.
 let noise=0.5, smooth=0.5, SENS=1.7;
-const MIN_HI=6;            // 720ms of real movement. A fidget is a blip; a rep lasts.
+let MIN_HI=4;              // samples of real movement (x120ms) before it counts
 let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
 
 function startFrames(){
@@ -558,7 +559,7 @@ function sampleMotion(){
   if(repState==='quiet'){ noise=noise*0.97+smooth*0.03; noise=Math.max(noise,0.15); }
   const hi=noise*SENS, lo=noise*1.55;
 
-  $('motionVal').textContent=smooth.toFixed(1);
+  $('motionVal').textContent=smooth.toFixed(1)+'/'+hi.toFixed(1);
   $('motionBar').dataset.hot = smooth>hi ? 'yes':'no';
   if(smooth>hi) lastMoveAt=Date.now();
 
@@ -571,10 +572,13 @@ function sampleMotion(){
     if(smooth>hi) hiN++;            // time genuinely moving, not the smoothing tail
     if(smooth<lo){
       const now=Date.now();
-      const real = hiN>=MIN_HI && now-lastRepAt>450;
+      const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>450;
       repState='quiet'; above=0;
-      if(inWorkout && phase!=='demonstrating' && !paused && real){
-        lastRepAt=now; countRep(hiN);
+      if(inWorkout && phase!=='demonstrating' && !paused){
+        if(longEnough && spaced){ lastRepAt=now; countRep(hiN); }
+        else L('warn',`burst NOT counted — ${hiN} samples above threshold, need `+
+          `${MIN_HI}${spaced?'':'; also too soon after last rep'}. `+
+          `Press , to accept shorter reps, ] to lower the threshold.`);
       }
       hiN=0;
     }
@@ -607,8 +611,13 @@ function sendFrame(){
 // [ and ] retune rep sensitivity live. Do this once, in your demo spot.
 addEventListener('keydown',e=>{
   if(/input|textarea/i.test(e.target.tagName))return;
-  if(e.key===']'){SENS=Math.max(1.2,SENS-0.15);L('info','MORE sensitive: x'+SENS.toFixed(2))}
+  // ] [  threshold height   |   , .  how long a movement must last
+  if(e.key===']'){SENS=Math.max(1.05,SENS-0.15);L('info','MORE sensitive: x'+SENS.toFixed(2))}
   if(e.key==='['){SENS=Math.min(6,SENS+0.15);L('info','LESS sensitive: x'+SENS.toFixed(2))}
+  if(e.key===','){MIN_HI=Math.max(2,MIN_HI-1);
+    L('info',`shorter reps ok: ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
+  if(e.key==='.'){MIN_HI=Math.min(12,MIN_HI+1);
+    L('info',`reps must last ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
 });
 
 /* ---------- controls ---------- */
