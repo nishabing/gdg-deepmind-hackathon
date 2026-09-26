@@ -421,25 +421,6 @@ function demoCycle(name){
   },33);
 }
 const stopCycle=()=>{clearInterval(cycle);cycle=null;poseTo('stand')};
-
-// The avatar works out alongside them. Driven by the same motion signal that counts
-// the reps, so it moves when they move and rests when they rest -- not on a timer.
-let mimePose='stand', mimeT=0, mimeDir=1;
-function mime(moving, swing){
-  if(phase!=='working' || !inWorkout){ return; }
-  if(swing!==null){
-    // Continuous movement: follow their direction directly, so a head circle on
-    // screen goes the same way theirs does.
-    mimeT = Math.max(0, Math.min(1, 0.5 + swing*4));
-  } else if(moving){
-    mimeT += mimeDir*0.09;
-    if(mimeT>=1){mimeT=1;mimeDir=-1} if(mimeT<=0){mimeT=0;mimeDir=1}
-  } else {
-    mimeT *= 0.88;                       // settle back to standing when they stop
-  }
-  const a=POSE.stand, b=POSE[mimePose]||POSE.stand, e=ease(mimeT);
-  goal=Object.fromEntries(Object.keys(a).map(k=>[k,a[k]+(b[k]-a[k])*e]));
-}
 // Map any exercise name onto the closest pose the avatar can mime. Unknown
 // movements stay standing rather than pretending to squat.
 const guessPose=n=>{n=(n||'').toLowerCase();
@@ -735,9 +716,6 @@ function sampleMotion(){
     }
   }
 
-  // Keep the avatar moving with them.
-  if(!cycle) mime(smooth>hi, continuous ? (cx-cxBase) : null);
-
   if(inWorkout && phase!=='demonstrating' && !paused){
     if(Date.now()-lastMoveAt<2500) clockStart(); else clockPause('no movement');
   }
@@ -899,13 +877,11 @@ function onTool(name,a){
     inWorkout=true; calibUntil=Date.now()+1500; noise=0.5;
     L('info','calibrating motion floor — hold still for a second');
     $('repN').textContent='0'; $('repEx').textContent=a.name||'reps';
-    $('status').textContent='watching you';
-    mimePose=guessPose(a.name); mimeT=0; mimeDir=1;   // avatar joins in
+    $('status').textContent='watching you'; poseTo(guessPose(a.name));
   }
   if(name==='end_exercise'){$('chip').dataset.s='';$('chip').textContent='watching';
     B.dataset.counting='off'; stopCycle();
-    inWorkout=false; mimePose='stand'; poseTo('stand');
-    clockPause('exercise finished')}
+    inWorkout=false; clockPause('exercise finished')}
 }
 
 /* ---- THE BEAT ---- */
