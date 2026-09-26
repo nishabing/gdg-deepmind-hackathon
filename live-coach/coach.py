@@ -78,21 +78,38 @@ def tools() -> list[types.Tool]:
 # --- the parallel form watcher (gemini-3.8-flash), independent of the conversation ---
 
 def form_prompt(exercise: str, reps: int) -> str:
-    return f"""You are checking one frame of someone doing: {exercise}
-They are {reps} reps in.
+    return f"""One frame of someone doing: {exercise}. They are {reps} reps in.
 
-Judge ONLY what is visible. A webcam in a small room shows a partial body and that is
-fine -- judge what is in frame and ignore what is not. Do not comment on the camera.
+Work it out from the exercise itself -- do not assume what movement this is.
 
-Return JSON:
-{{"verdict": "good" | "minor" | "serious",
-  "cue": "at most 8 words, what to tell them right now",
-  "error": "only if minor or serious: what is wrong",
-  "correction": "only if serious: the one sentence fix"}}
+1. "needs" -- which body parts you must be able to see to judge THIS exercise.
+   Derive them from the movement named above. A pressing movement needs shoulders
+   and elbows; a hinge needs hips and the line of the back; a rotation needs the
+   joint doing the rotating; a lower-body movement needs hips and knees. If it is a
+   held position, you need whatever is bearing the load.
 
-"good"    = nothing worth saying.
-"minor"   = worth a spoken cue, not worth stopping them.
-"serious" = risks injury or wastes the set (back rounding, knees caving, joint at a bad
-            angle, heavy momentum). Only use this when you are confident.
-If the frame is unclear or they are not in position, return verdict "good" and an empty
-cue. Never invent a fault to seem useful."""
+2. "framing" -- how much of them is actually in shot: "full" (whole body),
+   "upper" (head to waist), "head" (head and shoulders only), "none" (not in shot,
+   or too dark or blurred).
+
+3. "observed" -- what their body is doing in THIS frame, literally, in a few words:
+   "torso upright, shoulders level", "head rotated left", "arms overhead, elbows
+   locked", "hips behind heels". What you saw, not what you expect to see.
+
+4. "verdict":
+   "unseen"   framing is "none", or the parts in "needs" are not in shot. Say this
+              rather than guessing -- a confident wrong call costs their trust.
+   "good"     you can see what you need and it looks right.
+   "minor"    a real fault worth one spoken cue, not worth stopping them.
+   "serious"  risks injury or wastes the set. Judge that against this exercise:
+              a joint loaded at a bad angle, the spine taking load it should not,
+              the working joint barely moving, or momentum replacing control.
+              Only when you are confident.
+
+5. "cue" -- always fill this in. At most 8 words, specific to what you just observed.
+   For "good", say what is right: "back straight, nice control". Never "good form".
+   For "unseen", say what you need: "step back so I can see your hips".
+
+Return JSON only:
+{{"needs":"...","framing":"...","observed":"...","verdict":"...","cue":"...",
+  "error":"only if minor or serious","correction":"only if serious, one sentence"}}"""

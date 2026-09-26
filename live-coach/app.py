@@ -43,6 +43,8 @@ FORM_EVERY = float(os.environ.get("FORM_EVERY", "2.5"))   # seconds between form
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("coach")
+for _noisy in ("httpx", "google_genai.models", "google_genai"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = FastAPI()
 SESSIONS = {"n": 0, "seq": 0}     # if this ever exceeds 1, you have two coaches talking
@@ -61,7 +63,8 @@ CONFIG = types.LiveConnectConfig(
     input_audio_transcription=types.AudioTranscriptionConfig(),
 )
 FORM_CFG = types.GenerateContentConfig(
-    response_mime_type="application/json", temperature=0.2, max_output_tokens=300)
+    response_mime_type="application/json", temperature=0.3, max_output_tokens=400,
+    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
 
 
 @app.get("/")
@@ -80,7 +83,7 @@ async def live(ws: WebSocket):
                     "other. The page opened a second socket.", SESSIONS["n"])
     st = {"exercise": None, "kind": "large", "reps": 0, "frame": None,
           "active": False, "last_serious": 0.0, "demonstrating": False,
-          "paused": False}
+          "paused": False, "last_cue": "", "framing_warned": False}
     counters = {"audio": 0, "frames": 0}
 
     try:
@@ -156,8 +159,18 @@ async def live(ws: WebSocket):
                         continue
 
                     verdict = v.get("verdict", "good")
-                    log.info("FORM %-7s %s", verdict, v.get("cue", ""))
+                    cue = (v.get("cue") or "").strip()
+                    log.info("FORM %-7s framing=%-5s saw=%r -> %r", verdict,
+                             v.get("framing", "?"), v.get("observed", "")[:48], cue)
                     await ws.send_json({"t": "form", **v})
+
+                    if verdict == "unseen":
+                        # Say this once, not every 2.5 seconds.
+                        if not st["framing_warned"]:
+                            st["framing_warned"] = True
+                            await say(f"[FRAMING] {cue or 'you cannot see them properly'}")
+                        continue
+                    st["framing_warned"] = False
 
                     if verdict == "serious" and time.time() - st["last_serious"] > 20:
                         # THE BEAT: stop them, take the screen, demonstrate.
@@ -174,8 +187,10 @@ async def live(ws: WebSocket):
                             f"Exercise: {st['exercise']}\n"
                             f"Error: {v.get('error','')}\n"
                             f"Fix: {v.get('correction','')}")
-                    elif verdict == "minor" and v.get("cue"):
-                        await say(f"[FORM] {v['cue']}")
+                    elif verdict == "minor" and cue and cue != st["last_cue"]:
+                        # Don't repeat yourself every 2.5s -- that is nagging.
+                        st["last_cue"] = cue
+                        await say(f"[FORM] {cue}")
 
             # ---------- here -> browser ----------
             async def down():

@@ -363,6 +363,9 @@ const POSE={
   squat:{y:34,thigh:-42,shin:62,arm:72,fore:-8,lean:13},
   press:{y:0,thigh:0,shin:0,arm:-168,fore:6,lean:0},
   hinge:{y:12,thigh:-14,shin:10,arm:16,fore:0,lean:34},
+  lunge:{y:26,thigh:-58,shin:78,arm:14,fore:0,lean:6},
+  mobil:{y:0,thigh:0,shin:0,arm:-74,fore:-52,lean:0},   // rotations, circles, rolls
+  side :{y:0,thigh:0,shin:0,arm:-92,fore:0,lean:0},     // lateral raises, side work
 };
 let cur={...POSE.stand},goal={...POSE.stand},cycle=null;
 const ease=t=>t*t*(3-2*t);
@@ -387,9 +390,16 @@ function demoCycle(name){
   },33);
 }
 const stopCycle=()=>{clearInterval(cycle);cycle=null;poseTo('stand')};
+// Map any exercise name onto the closest pose the avatar can mime. Unknown
+// movements stay standing rather than pretending to squat.
 const guessPose=n=>{n=(n||'').toLowerCase();
-  if(/press|raise|curl|overhead/.test(n))return'press';
-  if(/deadlift|hinge|row|bend/.test(n))return'hinge'; return'squat'};
+  if(/roll|rotat|circle|twist|mobility|neck|wrist|ankle|shrug/.test(n))return'mobil';
+  if(/lateral|side|fly|abduct/.test(n))                                return'side';
+  if(/press|overhead|curl|push|raise|punch/.test(n))                   return'press';
+  if(/deadlift|hinge|row|bend|goodmorning|hip/.test(n))                return'hinge';
+  if(/lunge|step|split/.test(n))                                       return'lunge';
+  if(/squat|sit|chair|jump|calf/.test(n))                              return'squat';
+  return'stand'};
 
 (function tick(){
   // The coach's own output amplitude drives mouth, halo and bob, so the avatar is
@@ -693,7 +703,9 @@ function onMsg(m){
 // Form verdicts from the parallel gemini-3.8-flash watcher.
 function onForm(v){
   const c=$('chip');
-  if(v.verdict==='good'){c.dataset.s='good'; c.textContent=v.cue||'good form'; return}
+  L('down',`form ${v.verdict} [${v.framing||'?'}] ${v.observed||''} -> ${v.cue||''}`);
+  if(v.verdict==='unseen'){ c.dataset.s=''; c.textContent=v.cue||'can\'t see you'; return }
+  if(v.verdict==='good'){ c.dataset.s='good'; c.textContent=v.cue||'looking good'; return }
   c.dataset.s='error'; c.textContent=v.cue||v.error||'check form';
   tally.fix++; $('sFix').textContent=tally.fix;
 }
