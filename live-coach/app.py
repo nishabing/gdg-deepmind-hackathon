@@ -21,7 +21,8 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from coach import build_system_prompt, tools, get_user_profile_context, SYSTEM
+from coach import (build_system_prompt, tools, get_user_profile_context, SYSTEM,
+                   form_prompt)
 from database.db_manager import DBManager
 from concierge.health_goals import HealthGoalsManager
 

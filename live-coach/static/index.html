@@ -637,7 +637,12 @@ function sampleMotion(){
 
   // Learn the floor only while quiet -- letting the movement raise it makes each rep
   // harder to detect than the last.
-  if(repState==='quiet'){ noise=noise*0.97+smooth*0.03; noise=Math.max(noise,0.15); }
+  // Only learn from genuinely quiet moments. Between fast reps the smoothing tail
+  // is still high, and feeding that back in walks the floor upwards until the last
+  // reps of a set cannot clear it -- the floor tripled across one set before this.
+  if(repState==='quiet' && smooth < noise*1.5){
+    noise=noise*0.98+smooth*0.02; noise=Math.max(noise,0.15);
+  }
   const hi=noise*SENS, lo=noise*1.55;
 
   $('motionVal').textContent=smooth.toFixed(1)+'/'+hi.toFixed(1);
@@ -655,6 +660,7 @@ function sampleMotion(){
     const sorted=[...calibSamples].sort((a,b)=>a-b);
     noise=Math.max(0.15, sorted[Math.floor(sorted.length*0.25)]*1.25);
     calibSamples=[];
+    repState='quiet'; above=0; hiN=0;      // discard anything seen while measuring
     SLOG(`rep floor calibrated: ${noise.toFixed(2)} (fires above ${(noise*SENS).toFixed(2)})`);
   }
 
