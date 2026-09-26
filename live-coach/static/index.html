@@ -24,6 +24,10 @@ body[data-live=on] .logo i{background:var(--good);box-shadow:0 0 0 4px #3ddc8422
 .pill{display:flex;align-items:center;gap:7px;font:11px/1 ui-monospace,monospace;
   color:var(--dim);border:1px solid var(--line);padding:7px 11px;border-radius:999px}
 .pill b{color:var(--txt)}
+.pill .track{width:44px;height:3px;border-radius:2px;background:#1a1f2b;overflow:hidden}
+.pill .fill{display:block;height:100%;width:0;background:var(--dim);transition:width .08s}
+.pill[data-hot=yes] .fill{background:var(--good)}
+.pill[data-hot=yes]{border-color:#1e5334;color:var(--good)}
 .profile{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);
   background:linear-gradient(140deg,#2a3a5c,#1b2740);display:grid;place-items:center;
   font-size:12px;font-weight:650;color:#9fb4d8;cursor:pointer}
@@ -161,6 +165,19 @@ body[data-live=on] .gate{display:none}
 .rgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:8px 0}
 .rgrid .stat{min-width:106px}
 @media(max-width:1080px){main{grid-template-columns:1fr}.col.left{order:2}}
+/* ---------- debug drawer (press D) ---------- */
+#dbg{position:fixed;right:0;bottom:0;width:430px;max-height:46vh;overflow:auto;z-index:30;
+  background:#04050acc;backdrop-filter:blur(14px);border-left:1px solid var(--line);
+  border-top:1px solid var(--line);border-radius:12px 0 0 0;padding:10px 12px;
+  font:10.5px/1.55 ui-monospace,SFMono-Regular,monospace;display:none}
+body[data-dbg=on] #dbg{display:block}
+#dbg .r{display:flex;gap:7px;border-bottom:1px solid #ffffff08;padding:2px 0}
+#dbg .r time{color:#39404e;flex:none}
+#dbg .r span{word-break:break-word}
+#dbg .up{color:#7fa8d8}#dbg .down{color:#8fd8b0}#dbg .tool{color:#e8c07d}
+#dbg .warn{color:#ff9aa4}#dbg .info{color:#626b80}
+#dbg h3{margin:0 0 6px;font-size:9px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--dim);display:flex;justify-content:space-between}
 </style>
 
 <body data-phase="idle" data-live="off" data-counting="off" data-cam="on" data-report="off">
@@ -169,6 +186,9 @@ body[data-live=on] .gate{display:none}
   <header>
     <div class="logo"><i></i> Digital AI Coach</div>
     <div class="spacer"></div>
+    <div class="pill" id="micBar" data-hot="no">mic
+      <span class="track"><span class="fill" id="micFill"></span></span>
+      <b id="micRate">–</b></div>
     <div class="pill">frames <b id="frameCount">0</b></div>
     <div class="pill">motion <b id="motionVal">0.0</b></div>
     <div class="profile" title="Profile">MN</div>
@@ -257,12 +277,15 @@ body[data-live=on] .gate{display:none}
   </main>
 </div>
 
+<div id="dbg"><h3>debug log <span>press D to hide</span></h3><div id="dbgBody"></div></div>
+
 <div class="gate">
   <h1>Your coach is ready.</h1>
   <p>Press start, then just talk. It watches you move, counts your reps, and stops you
      when your form slips.</p>
   <button onclick="begin()">Start session</button>
-  <small>Use headphones — otherwise it hears itself and interrupts.</small>
+  <small>Use headphones — otherwise it hears itself and interrupts.<br>
+     Press <b style="color:#626b80">D</b> any time for the debug log.</small>
 </div>
 
 <div class="report">
@@ -285,8 +308,28 @@ const STREAK_DAY=3, STREAK_LEN=7;          // which day of the plan we're on
 const $=id=>document.getElementById(id);
 const B=document.body;
 
+/* ---------- logging ---------- */
+// Everything that crosses the wire, on screen. Faster than devtools mid-demo.
+function L(kind,msg){
+  const t=new Date().toTimeString().slice(0,8);
+  console.log(`[${kind}]`,msg);
+  const b=$('dbgBody'); if(!b)return;
+  const r=document.createElement('div'); r.className='r';
+  r.innerHTML=`<time>${t}</time><span class="${kind}">${String(msg)
+    .replace(/</g,'&lt;')}</span>`;
+  b.appendChild(r);
+  while(b.children.length>160) b.removeChild(b.firstChild);
+  b.parentElement.scrollTop=b.parentElement.scrollHeight;
+}
+addEventListener('keydown',e=>{
+  if(e.key==='d'||e.key==='D'){
+    if(/input|textarea/i.test(e.target.tagName))return;
+    B.dataset.dbg = B.dataset.dbg==='on'?'off':'on';
+  }
+});
+
 let ws,stream,micCtx,outCtx,analyser,frameTimer,clockTimer,playHead=0,sources=[];
-let phase='idle',frames=0,amp=0,t0=0;
+let phase='idle',frames=0,amp=0,t0=0,inAmp=0,sentChunks=0;
 let micOn=true,camOn=true;
 const tally={clean:0,total:0,fix:0};
 const setPhase=p=>{phase=p;B.dataset.phase=p};
@@ -359,7 +402,9 @@ async function begin(){
 
   ws=new WebSocket(`ws://${location.host}/live`);
   ws.onmessage=e=>onMsg(JSON.parse(e.data));
-  ws.onclose=()=>{B.dataset.live='off';$('status').textContent='disconnected'};
+  ws.onclose=()=>{B.dataset.live='off';$('status').textContent='disconnected';
+    L('warn','websocket closed')};
+  ws.onerror=()=>L('warn','websocket error');
   await new Promise(r=>ws.onopen=r);
 
   outCtx=new AudioContext({sampleRate:OUT_RATE});
@@ -369,6 +414,7 @@ async function begin(){
   startMic(); startFrames();
   t0=Date.now(); clockTimer=setInterval(paintClock,500);
   B.dataset.live='on'; setPhase('listening'); $('status').textContent='listening';
+  L('info','session started — speak now');
 }
 
 function paintClock(){
@@ -378,18 +424,57 @@ function paintClock(){
 }
 
 function startMic(){
-  micCtx=new AudioContext({sampleRate:MIC_RATE});
+  // Do NOT force sampleRate here. Chrome often ignores it and hands back a 48k
+  // context anyway; we'd then ship 48k samples labelled 16k and Live hears noise.
+  // Take whatever rate the hardware gives and downsample explicitly.
+  micCtx=new AudioContext();
+  micCtx.resume();                       // Chrome can hand back a suspended context
+  const inRate=micCtx.sampleRate;
+  L('info',`mic context ${inRate}Hz -> downsampling to ${MIC_RATE}Hz`);
+  $('micRate').textContent=inRate/1000+'k';
+
   const src=micCtx.createMediaStreamSource(stream);
   // Deprecated but dependency-free. Don't swap for an AudioWorklet today.
   const node=micCtx.createScriptProcessor(4096,1,1);
   node.onaudioprocess=e=>{
+    const f=e.inputBuffer.getChannelData(0);
+
+    // Input level meter — this is YOUR voice, not the coach's. If it never moves,
+    // the browser is not giving us microphone audio at all.
+    let sum=0; for(let i=0;i<f.length;i++) sum+=f[i]*f[i];
+    const rms=Math.sqrt(sum/f.length);
+    inAmp=inAmp*.6+Math.min(1,rms*9)*.4;
+    $('micFill').style.width=(inAmp*100)+'%';
+    $('micBar').dataset.hot=inAmp>.05?'yes':'no';
+
     if(ws?.readyState!==1||!micOn)return;
-    const f=e.inputBuffer.getChannelData(0),i16=new Int16Array(f.length);
-    for(let i=0;i<f.length;i++){const s=Math.max(-1,Math.min(1,f[i]));
-      i16[i]=s<0?s*0x8000:s*0x7fff}
+    const ds=downsample(f,inRate,MIC_RATE);
+    const i16=new Int16Array(ds.length);
+    for(let i=0;i<ds.length;i++){const v=Math.max(-1,Math.min(1,ds[i]));
+      i16[i]=v<0?v*0x8000:v*0x7fff}
     ws.send(JSON.stringify({t:'audio',d:b64(i16.buffer)}));
+    sentChunks++;
   };
   src.connect(node); node.connect(micCtx.destination);
+
+  // If nothing has been captured after 4s, the mic is the problem, not the model.
+  setTimeout(()=>{
+    if(sentChunks===0) L('warn','NO MIC AUDIO CAPTURED — check the browser mic permission');
+    else L('info',`mic ok — ${sentChunks} chunks sent in 4s`);
+  },4000);
+}
+
+// Average-pool down to the rate Live expects. Cheap and good enough for speech.
+function downsample(f32,inRate,outRate){
+  if(inRate===outRate)return f32;
+  const ratio=inRate/outRate, outLen=Math.floor(f32.length/ratio);
+  const out=new Float32Array(outLen);
+  for(let i=0;i<outLen;i++){
+    const a=Math.floor(i*ratio), b=Math.min(f32.length,Math.floor((i+1)*ratio));
+    let s=0,n=0; for(let j=a;j<b;j++){s+=f32[j];n++}
+    out[i]=n?s/n:0;
+  }
+  return out;
 }
 
 function startFrames(){
@@ -418,12 +503,14 @@ function startFrames(){
 
     if(score>MOTION_THRESH){
       still=0;
-      if(!moving){moving=true;ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}
+      if(!moving){moving=true;L('up','vision: movement resumed');
+        ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}
     }else{
       still++;
       if(still>=3&&Date.now()-lastSig>3000){
         lastSig=Date.now(); moving=false;
         // Ground truth, rather than hoping the model notices.
+        L('up',`vision: still for ${((still*FRAME_MS)/1000).toFixed(0)}s`);
         ws.send(JSON.stringify({t:'text',d:`[VISION: no movement for `+
           `${((still*FRAME_MS)/1000).toFixed(0)}s — they are standing still, not exercising]`}));
       }
@@ -436,13 +523,15 @@ function startFrames(){
 
 /* ---------- controls ---------- */
 function toggleMic(){
-  micOn=!micOn; $('micBtn').classList.toggle('off',!micOn);
+  micOn=!micOn; L('up',micOn?'mic unmuted':'mic MUTED — not sending audio');
+  $('micBtn').classList.toggle('off',!micOn);
   $('status').textContent=micOn?'listening':'muted';
 }
 function toggleCam(){
   camOn=!camOn; B.dataset.cam=camOn?'on':'off';
   $('camBtn').classList.toggle('off',!camOn);
   // Camera off means tracking pauses — tell the model, don't let it guess.
+  L('up',camOn?'camera on — tracking resumed':'camera off — tracking paused');
   ws?.send(JSON.stringify({t:'text',d:camOn
     ?'[VISION: camera back on, tracking resumed]'
     :'[VISION: camera off — tracking paused, you cannot see them]'}));
@@ -460,6 +549,12 @@ function endSession(){
 
 /* ---------- wire ---------- */
 function onMsg(m){
+  if(m.t==='ready')      L('info','server ready — Live session open');
+  if(m.t==='heard')      L('down','HEARD YOU: '+m.d);
+  if(m.t==='caption')    L('down','says: '+m.d);
+  if(m.t==='tool')       L('tool',m.name+' '+JSON.stringify(m.args||{}).slice(0,120));
+  if(m.t==='interrupted')L('warn','barge-in — dropping queued audio');
+  if(m.t==='error')      L('warn','server error: '+m.d);
   if(m.t==='audio')      return play(m.d);
   if(m.t==='caption'){const e=$('caption');
     if(e.querySelector('.ph'))e.textContent='';
