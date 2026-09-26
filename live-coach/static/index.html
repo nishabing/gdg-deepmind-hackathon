@@ -299,7 +299,9 @@ body[data-dbg=on] #dbg{display:block}
   <button id="startBtn" onclick="begin()">Start session</button>
   <div id="gateMsg" style="display:none; color:#fca5a5; font-size:13px; max-width:400px; margin-top:4px; line-height:1.4;"></div>
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
-     Press <b style="color:#626b80">D</b> any time for the debug log.</small>
+     <b style="color:#626b80">D</b> log · <b style="color:#626b80">] [</b> rep
+     sensitivity · <b style="color:#626b80">, .</b> rep length ·
+     <b style="color:#626b80">'</b> mic gate (off)</small>
 </div>
 
 <div class="report">
@@ -345,6 +347,10 @@ addEventListener('keydown',e=>{
 
 let ws,stream,micCtx,outCtx,analyser,frameTimer,motionTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
+// Mic noise gate, OFF by default. Gating on level assumes the speaker is well
+// above the room; in a loud hall they often are not, so it silenced the user along
+// with the chatter. Turn it on with ' only if the room is actually getting through.
+let gateOn=false, micFloor=0.004, gateUntil=0, GATE_MULT=2.2; const preroll=[];
 // Workout time, not wall time: accumulate only while they're actually working.
 let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
 let micOn=true,camOn=true;
@@ -374,6 +380,9 @@ const POSE={
   squat:{y:34,thigh:-42,shin:62,arm:72,fore:-8,lean:13},
   press:{y:0,thigh:0,shin:0,arm:-168,fore:6,lean:0},
   hinge:{y:12,thigh:-14,shin:10,arm:16,fore:0,lean:34},
+  lunge:{y:26,thigh:-58,shin:78,arm:14,fore:0,lean:6},
+  mobil:{y:0,thigh:0,shin:0,arm:-74,fore:-52,lean:0},   // rotations, circles, rolls
+  side :{y:0,thigh:0,shin:0,arm:-92,fore:0,lean:0},     // lateral raises, side work
 };
 let cur={...POSE.stand},goal={...POSE.stand},cycle=null;
 const ease=t=>t*t*(3-2*t);
@@ -398,9 +407,16 @@ function demoCycle(name){
   },33);
 }
 const stopCycle=()=>{clearInterval(cycle);cycle=null;poseTo('stand')};
+// Map any exercise name onto the closest pose the avatar can mime. Unknown
+// movements stay standing rather than pretending to squat.
 const guessPose=n=>{n=(n||'').toLowerCase();
-  if(/press|raise|curl|overhead/.test(n))return'press';
-  if(/deadlift|hinge|row|bend/.test(n))return'hinge'; return'squat'};
+  if(/roll|rotat|circle|twist|mobility|neck|wrist|ankle|shrug/.test(n))return'mobil';
+  if(/lateral|side|fly|abduct/.test(n))                                return'side';
+  if(/press|overhead|curl|push|raise|punch/.test(n))                   return'press';
+  if(/deadlift|hinge|row|bend|goodmorning|hip/.test(n))                return'hinge';
+  if(/lunge|step|split/.test(n))                                       return'lunge';
+  if(/squat|sit|chair|jump|calf/.test(n))                              return'squat';
+  return'stand'};
 
 (function tick(){
   // The coach's own output amplitude drives mouth, halo and bob, so the avatar is
@@ -495,13 +511,31 @@ function startMic(){
     const rms=Math.sqrt(sum/f.length);
     inAmp=inAmp*.6+Math.min(1,rms*9)*.4;
     $('micFill').style.width=(inAmp*100)+'%';
-    $('micBar').dataset.hot=inAmp>.05?'yes':'no';
 
     if(ws?.readyState!==1||!micOn)return;
+
     const ds=downsample(f,inRate,MIC_RATE);
     const i16=new Int16Array(ds.length);
     for(let i=0;i<ds.length;i++){const v=Math.max(-1,Math.min(1,ds[i]));
       i16[i]=v<0?v*0x8000:v*0x7fff}
+
+    // Noise gate. In a crowded hall the room's conversation reaches the mic, and
+    // the model transcribes it, answers it, and treats it as the user interrupting.
+    // Only the person in front of the laptop should get through.
+    if(gateOn){
+      const now=Date.now();
+      if(rms>micFloor*GATE_MULT+0.002) gateUntil=now+900;   // generous hangover
+      else if(rms<micFloor*2) micFloor=micFloor*0.995+rms*0.005;
+      if(now>=gateUntil){
+        preroll.push(i16); if(preroll.length>8) preroll.shift();
+        $('micBar').dataset.hot='no';
+        return;
+      }
+      // Gate just opened: send the lead-in so the first syllable is not clipped.
+      for(const c of preroll) ws.send(JSON.stringify({t:'audio',d:b64(c.buffer)}));
+      preroll.length=0;
+    }
+    $('micBar').dataset.hot = inAmp>.05?'yes':'no';
     ws.send(JSON.stringify({t:'audio',d:b64(i16.buffer)}));
     sentChunks++;
   };
@@ -533,7 +567,7 @@ let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
 // and very small movements. SENS is a MULTIPLE of the room's measured noise, not an
 // absolute, so the tuning carries across rooms and lighting.
 let noise=0.5, smooth=0.5, SENS=1.7;
-const MIN_HI=6;            // 720ms of real movement. A fidget is a blip; a rep lasts.
+let MIN_HI=4;              // samples of real movement (x120ms) before it counts
 let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
 
 function startFrames(){
@@ -570,7 +604,7 @@ function sampleMotion(){
   if(repState==='quiet'){ noise=noise*0.97+smooth*0.03; noise=Math.max(noise,0.15); }
   const hi=noise*SENS, lo=noise*1.55;
 
-  $('motionVal').textContent=smooth.toFixed(1);
+  $('motionVal').textContent=smooth.toFixed(1)+'/'+hi.toFixed(1);
   $('motionBar').dataset.hot = smooth>hi ? 'yes':'no';
   if(smooth>hi) lastMoveAt=Date.now();
 
@@ -583,10 +617,13 @@ function sampleMotion(){
     if(smooth>hi) hiN++;            // time genuinely moving, not the smoothing tail
     if(smooth<lo){
       const now=Date.now();
-      const real = hiN>=MIN_HI && now-lastRepAt>450;
+      const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>450;
       repState='quiet'; above=0;
-      if(inWorkout && phase!=='demonstrating' && !paused && real){
-        lastRepAt=now; countRep(hiN);
+      if(inWorkout && phase!=='demonstrating' && !paused){
+        if(longEnough && spaced){ lastRepAt=now; countRep(hiN); }
+        else L('warn',`burst NOT counted — ${hiN} samples above threshold, need `+
+          `${MIN_HI}${spaced?'':'; also too soon after last rep'}. `+
+          `Press , to accept shorter reps, ] to lower the threshold.`);
       }
       hiN=0;
     }
@@ -619,8 +656,19 @@ function sendFrame(){
 // [ and ] retune rep sensitivity live. Do this once, in your demo spot.
 addEventListener('keydown',e=>{
   if(/input|textarea/i.test(e.target.tagName))return;
-  if(e.key===']'){SENS=Math.max(1.2,SENS-0.15);L('info','MORE sensitive: x'+SENS.toFixed(2))}
+  // ] [  threshold height   |   , .  how long a movement must last
+  if(e.key===']'){SENS=Math.max(1.05,SENS-0.15);L('info','MORE sensitive: x'+SENS.toFixed(2))}
   if(e.key==='['){SENS=Math.min(6,SENS+0.15);L('info','LESS sensitive: x'+SENS.toFixed(2))}
+  // ; ' adjust the mic noise gate for the room you are actually in
+  // ' toggles the mic gate; ; loosens it while it is on
+  if(e.key==="'"){gateOn=!gateOn; micFloor=0.004; gateUntil=0; preroll.length=0;
+    L('warn',`mic gate ${gateOn?'ON — room noise filtered':'OFF — everything sent'}`)}
+  if(e.key===';'){GATE_MULT=Math.max(1.2,GATE_MULT-0.3);
+    L('info',`gate looser: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
+  if(e.key===','){MIN_HI=Math.max(2,MIN_HI-1);
+    L('info',`shorter reps ok: ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
+  if(e.key==='.'){MIN_HI=Math.min(12,MIN_HI+1);
+    L('info',`reps must last ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
 });
 
 /* ---------- controls ---------- */
@@ -706,7 +754,9 @@ function onMsg(m){
 // Form verdicts from the parallel gemini-3.8-flash watcher.
 function onForm(v){
   const c=$('chip');
-  if(v.verdict==='good'){c.dataset.s='good'; c.textContent=v.cue||'good form'; return}
+  L('down',`form ${v.verdict} [${v.framing||'?'}] ${v.observed||''} -> ${v.cue||''}`);
+  if(v.verdict==='unseen'){ c.dataset.s=''; c.textContent=v.cue||'can\'t see you'; return }
+  if(v.verdict==='good'){ c.dataset.s='good'; c.textContent=v.cue||'looking good'; return }
   c.dataset.s='error'; c.textContent=v.cue||v.error||'check form';
   tally.fix++; $('sFix').textContent=tally.fix;
 }

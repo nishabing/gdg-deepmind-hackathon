@@ -12,7 +12,7 @@ nothing was reliable:
 Live never sees video and never counts. That keeps its turns short and stops it
 stalling, and it is why small movements like shoulder rolls now register at all.
 """
-import asyncio, base64, io, json, logging, os, pathlib, time, traceback, wave
+import asyncio, base64, io, json, logging, os, pathlib, re, time, traceback, wave
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -44,11 +44,14 @@ LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")            # the coach
 TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")       # avatar narration
 FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")           # plan + script
 VOICE = os.environ.get("GEMINI_VOICE", "Puck")
+LANG  = os.environ.get("GEMINI_LANG", "en-US")   # it drifted into Spanish without this
 FORM_EVERY = float(os.environ.get("FORM_EVERY", "2.5"))   # seconds between form checks
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("coach")
+for _noisy in ("httpx", "google_genai.models", "google_genai"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 app = FastAPI()
@@ -62,9 +65,25 @@ SESSIONS = {"n": 0, "seq": 0}     # if this ever exceeds 1, you have two coaches
 
 client = genai.Client(api_key=api_key or "DUMMY_KEY_FOR_INIT",
                       http_options={"api_version": "v1alpha"}) if api_key else None
-
+STARTED = time.strftime("%H:%M:%S")
 FORM_CFG = types.GenerateContentConfig(
-    response_mime_type="application/json", temperature=0.2, max_output_tokens=300)
+    response_mime_type="application/json", temperature=0.3,
+    max_output_tokens=900,          # 400 truncated the JSON mid-string
+    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+
+
+def parse_form(text: str) -> dict:
+    """Salvage a truncated response rather than throwing the whole check away."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    out = {}
+    for key in ("needs", "framing", "observed", "verdict", "cue", "error", "correction"):
+        m = re.search(rf'"{key}"\s*:\s*"([^"]*)', text or "")
+        if m:
+            out[key] = m.group(1)
+    return out
 
 
 def get_live_config(user_id: str = "default_user") -> types.LiveConnectConfig:
@@ -73,8 +92,13 @@ def get_live_config(user_id: str = "default_user") -> types.LiveConnectConfig:
         response_modalities=["AUDIO"],
         system_instruction=types.Content(parts=[types.Part(text=sys_text)]),
         tools=tools(),
-        speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
+        speech_config=types.SpeechConfig(
+            language_code=LANG,
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
+        # Left at defaults on purpose: START_SENSITIVITY_LOW stopped the model
+        # registering speech at all, and language_codes on the INPUT transcription
+        # is unverified against this model. English is pinned above and in the prompt.
         output_audio_transcription=types.AudioTranscriptionConfig(),
         input_audio_transcription=types.AudioTranscriptionConfig(),
     )
@@ -173,7 +197,7 @@ async def live(ws: WebSocket):
                     "other. The page opened a second socket.", SESSIONS["n"])
     st = {"exercise": None, "kind": "large", "reps": 0, "frame": None,
           "active": False, "last_serious": 0.0, "demonstrating": False,
-          "paused": False}
+          "paused": False, "last_cue": "", "framing_warned": False}
     counters = {"audio": 0, "frames": 0}
 
     user_id = ws.query_params.get("user_id", "default_user")
@@ -246,14 +270,27 @@ async def live(ws: WebSocket):
                             contents=[types.Part(text=form_prompt(st["exercise"], st["reps"])),
                                       types.Part(inline_data=types.Blob(
                                           data=st["frame"], mime_type="image/jpeg"))])
-                        v = json.loads(r.text or "{}")
+                        v = parse_form(r.text or "")
+                        if not v.get("verdict"):
+                            log.warning("form check unusable: %r", (r.text or "")[:120])
+                            continue
                     except Exception as e:
                         log.warning("form check failed: %s", str(e)[:120])
                         continue
 
                     verdict = v.get("verdict", "good")
-                    log.info("FORM %-7s %s", verdict, v.get("cue", ""))
+                    cue = (v.get("cue") or "").strip()
+                    log.info("FORM %-7s framing=%-5s saw=%r -> %r", verdict,
+                             v.get("framing", "?"), v.get("observed", "")[:48], cue)
                     await ws.send_json({"t": "form", **v})
+
+                    if verdict == "unseen":
+                        # Say this once, not every 2.5 seconds.
+                        if not st["framing_warned"]:
+                            st["framing_warned"] = True
+                            await say(f"[FRAMING] {cue or 'you cannot see them properly'}")
+                        continue
+                    st["framing_warned"] = False
 
                     if verdict == "serious" and time.time() - st["last_serious"] > 20:
                         # THE BEAT: stop them, take the screen, demonstrate.
@@ -270,8 +307,10 @@ async def live(ws: WebSocket):
                             f"Exercise: {st['exercise']}\n"
                             f"Error: {v.get('error','')}\n"
                             f"Fix: {v.get('correction','')}")
-                    elif verdict == "minor" and v.get("cue"):
-                        await say(f"[FORM] {v['cue']}")
+                    elif verdict == "minor" and cue and cue != st["last_cue"]:
+                        # Don't repeat yourself every 2.5s -- that is nagging.
+                        st["last_cue"] = cue
+                        await say(f"[FORM] {cue}")
 
             # ---------- here -> browser ----------
             async def down():
@@ -360,7 +399,10 @@ async def demo_narration(d: DemoIn):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "live": LIVE, "flash": FLASH, "form_every": FORM_EVERY}
+    # started_at tells you whether the process actually picked up your last edit.
+    return {"ok": True, "live": LIVE, "flash": FLASH, "form_every": FORM_EVERY,
+            "voice": VOICE, "lang": LANG, "started_at": STARTED,
+            "vad": "defaults", "sessions_open": SESSIONS["n"]}
 
 
 if os.path.exists("static"):
