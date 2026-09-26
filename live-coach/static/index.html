@@ -300,7 +300,7 @@ body[data-dbg=on] #dbg{display:block}
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
      <b style="color:#626b80">D</b> log · <b style="color:#626b80">] [</b> rep
      sensitivity · <b style="color:#626b80">, .</b> rep length ·
-     <b style="color:#626b80">; '</b> mic gate</small>
+     <b style="color:#626b80">'</b> mic gate (off)</small>
 </div>
 
 <div class="report">
@@ -345,8 +345,10 @@ addEventListener('keydown',e=>{
 
 let ws,stream,micCtx,outCtx,analyser,frameTimer,motionTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
-// mic noise gate: GATE_MULT is a multiple of the measured room floor
-let micFloor=0.004, gateUntil=0, GATE_MULT=3.2; const preroll=[];
+// Mic noise gate, OFF by default. Gating on level assumes the speaker is well
+// above the room; in a loud hall they often are not, so it silenced the user along
+// with the chatter. Turn it on with ' only if the room is actually getting through.
+let gateOn=false, micFloor=0.004, gateUntil=0, GATE_MULT=2.2; const preroll=[];
 // Workout time, not wall time: accumulate only while they're actually working.
 let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
 let micOn=true,camOn=true;
@@ -508,19 +510,20 @@ function startMic(){
     // Noise gate. In a crowded hall the room's conversation reaches the mic, and
     // the model transcribes it, answers it, and treats it as the user interrupting.
     // Only the person in front of the laptop should get through.
-    const now=Date.now();
-    if(rms>micFloor*GATE_MULT+0.004) gateUntil=now+700;   // hangover, so words survive
-    else if(rms<micFloor*2) micFloor=micFloor*0.995+rms*0.005;
-    const open = now<gateUntil;
-    $('micBar').dataset.hot = open?'yes':'no';
-
-    if(!open){
-      preroll.push(i16); if(preroll.length>4) preroll.shift();   // ~1s of lead-in
-      return;
+    if(gateOn){
+      const now=Date.now();
+      if(rms>micFloor*GATE_MULT+0.002) gateUntil=now+900;   // generous hangover
+      else if(rms<micFloor*2) micFloor=micFloor*0.995+rms*0.005;
+      if(now>=gateUntil){
+        preroll.push(i16); if(preroll.length>8) preroll.shift();
+        $('micBar').dataset.hot='no';
+        return;
+      }
+      // Gate just opened: send the lead-in so the first syllable is not clipped.
+      for(const c of preroll) ws.send(JSON.stringify({t:'audio',d:b64(c.buffer)}));
+      preroll.length=0;
     }
-    // Gate just opened: send the lead-in first so the first syllable is not clipped.
-    for(const chunk of preroll) ws.send(JSON.stringify({t:'audio',d:b64(chunk.buffer)}));
-    preroll.length=0;
+    $('micBar').dataset.hot = inAmp>.05?'yes':'no';
     ws.send(JSON.stringify({t:'audio',d:b64(i16.buffer)}));
     sentChunks++;
   };
@@ -645,10 +648,11 @@ addEventListener('keydown',e=>{
   if(e.key===']'){SENS=Math.max(1.05,SENS-0.15);L('info','MORE sensitive: x'+SENS.toFixed(2))}
   if(e.key==='['){SENS=Math.min(6,SENS+0.15);L('info','LESS sensitive: x'+SENS.toFixed(2))}
   // ; ' adjust the mic noise gate for the room you are actually in
+  // ' toggles the mic gate; ; loosens it while it is on
+  if(e.key==="'"){gateOn=!gateOn; micFloor=0.004; gateUntil=0; preroll.length=0;
+    L('warn',`mic gate ${gateOn?'ON — room noise filtered':'OFF — everything sent'}`)}
   if(e.key===';'){GATE_MULT=Math.max(1.2,GATE_MULT-0.3);
-    L('info',`mic gate MORE open: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
-  if(e.key==="'"){GATE_MULT=Math.min(12,GATE_MULT+0.3);
-    L('info',`mic gate TIGHTER: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
+    L('info',`gate looser: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
   if(e.key===','){MIN_HI=Math.max(2,MIN_HI-1);
     L('info',`shorter reps ok: ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
   if(e.key==='.'){MIN_HI=Math.min(12,MIN_HI+1);
