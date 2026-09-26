@@ -47,6 +47,7 @@ for _noisy in ("httpx", "google_genai.models", "google_genai"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = FastAPI()
+STARTED = time.strftime("%H:%M:%S")
 SESSIONS = {"n": 0, "seq": 0}     # if this ever exceeds 1, you have two coaches talking
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"],
                       http_options={"api_version": "v1alpha"})
@@ -59,19 +60,13 @@ CONFIG = types.LiveConnectConfig(
         language_code=LANG,
         voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
-    # Pin BOTH transcriptions to English. language_code on speech_config only binds
-    # what it says; input transcription was auto-detecting and coming back Spanish.
-    output_audio_transcription=types.AudioTranscriptionConfig(
-        language_codes=[LANG]),
-    input_audio_transcription=types.AudioTranscriptionConfig(
-        language_codes=[LANG]),
-    # A crowded room sets off barge-in constantly. Make it harder to trigger and
-    # require a longer silence before it decides the user has stopped talking.
-    realtime_input_config=types.RealtimeInputConfig(
-        automatic_activity_detection=types.AutomaticActivityDetection(
-            start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
-            end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-            prefix_padding_ms=300, silence_duration_ms=900)),
+    # Left at defaults deliberately. START_SENSITIVITY_LOW was tried to cut false
+    # barge-ins from room noise and it stopped the model registering speech at all;
+    # pinning language_codes on the INPUT transcription is unverified against this
+    # model, so neither is worth risking. English is enforced in the prompt and on
+    # the output voice instead.
+    output_audio_transcription=types.AudioTranscriptionConfig(),
+    input_audio_transcription=types.AudioTranscriptionConfig(),
 )
 FORM_CFG = types.GenerateContentConfig(
     response_mime_type="application/json", temperature=0.3,
@@ -308,7 +303,10 @@ async def demo_narration(d: DemoIn):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "live": LIVE, "flash": FLASH, "form_every": FORM_EVERY}
+    # started_at tells you whether the process actually picked up your last edit.
+    return {"ok": True, "live": LIVE, "flash": FLASH, "form_every": FORM_EVERY,
+            "voice": VOICE, "lang": LANG, "started_at": STARTED,
+            "vad": "defaults", "sessions_open": SESSIONS["n"]}
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
