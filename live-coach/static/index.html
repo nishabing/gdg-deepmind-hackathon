@@ -307,7 +307,7 @@ body[data-dbg=on] #dbg{display:block}
 <script>
 const MIC_RATE=16000, OUT_RATE=24000, FRAME_MS=700;
 // Tune against your room: watch the motion readout still, then moving.
-const MOTION_THRESH=2.2;
+const MOTION_THRESH=1.4;
 const STREAK_DAY=3, STREAK_LEN=7;          // which day of the plan we're on
 const $=id=>document.getElementById(id);
 const B=document.body;
@@ -518,6 +518,12 @@ function startFrames(){
     prev=luma;
     $('motionVal').textContent=score.toFixed(1);
 
+    const inSet = inWorkout && phase!=='demonstrating';
+    // Small-amplitude work (neck rotations, wrist circles) barely moves pixels.
+    // Once a set is under way, believe the set, not the pixel diff.
+    const stillLimit = inSet ? 14 : 5;      // ~10s mid-set vs ~3.5s while chatting
+    const stillGap   = inSet ? 12000 : 8000;
+
     if(score>MOTION_THRESH){
       still=0;
       if(!moving){moving=true;
@@ -525,7 +531,7 @@ function startFrames(){
           ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}}
     }else{
       still++;
-      if(inWorkout && still>=5 && Date.now()-lastSig>8000){
+      if(still>=stillLimit && Date.now()-lastSig>stillGap){
         lastSig=Date.now(); moving=false;
         // Ground truth, rather than hoping the model notices.
         L('up',`vision: still for ${((still*FRAME_MS)/1000).toFixed(0)}s`);
@@ -533,7 +539,9 @@ function startFrames(){
           `${((still*FRAME_MS)/1000).toFixed(0)}s — they are standing still, not exercising]`}));
       }
     }
-    if(score<=MOTION_THRESH&&still%4!==0)return;   // near-duplicates are waste
+    // Only skip near-duplicate frames when nothing is happening. During a set every
+    // frame matters, however small the movement.
+    if(!inSet && score<=MOTION_THRESH && still%4!==0) return;
     ws.send(JSON.stringify({t:'frame',d:c.toDataURL('image/jpeg',.5).split(',')[1]}));
     $('frameCount').textContent=++frames;
   },FRAME_MS);
