@@ -520,11 +520,12 @@ function startFrames(){
 
     if(score>MOTION_THRESH){
       still=0;
-      if(!moving){moving=true;L('up','vision: movement resumed');
-        ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}
+      if(!moving){moving=true;
+        if(inWorkout){L('up','vision: movement resumed');
+          ws.send(JSON.stringify({t:'text',d:'[VISION: movement resumed]'}))}}
     }else{
       still++;
-      if(still>=3&&Date.now()-lastSig>3000){
+      if(inWorkout && still>=5 && Date.now()-lastSig>8000){
         lastSig=Date.now(); moving=false;
         // Ground truth, rather than hoping the model notices.
         L('up',`vision: still for ${((still*FRAME_MS)/1000).toFixed(0)}s`);
