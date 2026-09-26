@@ -310,7 +310,8 @@ body[data-dbg=on] #dbg{display:block}
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
      <b style="color:#626b80">D</b> log · <b style="color:#626b80">] [</b> rep
      sensitivity · <b style="color:#626b80">, .</b> rep length ·
-     <b style="color:#626b80">'</b> mic gate (on)</small>
+     <b style="color:#626b80">'</b> mic gate ·
+     <b style="color:#626b80">- =</b> rep spacing</small>
      <br><small style="color:#39404e">Stay quiet for two seconds after starting —
      it measures the room.</small>
 </div>
@@ -600,6 +601,10 @@ let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
 // absolute, so the tuning carries across rooms and lighting.
 let noise=0.5, smooth=0.5, SENS=1.7;
 let MIN_HI=3;              // samples of real movement (x120ms) before it counts
+// Most movements are out AND back: a tilt right then centre is two bursts but one
+// rep. This gap swallows the return so the pair counts once. Lower it with - if a
+// genuinely fast exercise is being under-counted.
+let REFRACTORY=1200;
 let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
 let calibSamples=[], lastReject=0;
 // Everything the rep detector decides goes to the server log too, so one log
@@ -671,7 +676,7 @@ function sampleMotion(){
     if(smooth>hi) hiN++;            // time genuinely moving, not the smoothing tail
     if(smooth<lo){
       const now=Date.now();
-      const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>450;
+      const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>REFRACTORY;
       repState='quiet'; above=0;
       if(inWorkout && phase!=='demonstrating' && !paused){
         if(longEnough && spaced){ lastRepAt=now; countRep(hiN); }
@@ -724,6 +729,10 @@ addEventListener('keydown',e=>{
     L('info',`gate looser: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
   if(e.key===','){MIN_HI=Math.max(2,MIN_HI-1);
     L('info',`shorter reps ok: ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
+  if(e.key==='-'){REFRACTORY=Math.max(300,REFRACTORY-200);
+    L('info',`reps can be ${REFRACTORY}ms apart (counts faster)`)}
+  if(e.key==='='){REFRACTORY=Math.min(3000,REFRACTORY+200);
+    L('info',`reps must be ${REFRACTORY}ms apart (counts slower)`)}
   if(e.key==='.'){MIN_HI=Math.min(12,MIN_HI+1);
     L('info',`reps must last ${MIN_HI} samples (${(MIN_HI*0.12).toFixed(2)}s)`)}
 });
