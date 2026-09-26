@@ -14,13 +14,19 @@ stalling, and it is why small movements like shoulder rolls now register at all.
 """
 import asyncio, base64, io, json, logging, os, pathlib, re, time, traceback, wave
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from coach import SYSTEM, tools, form_prompt
+from coach import build_system_prompt, tools, get_user_profile_context, SYSTEM
+from database.db_manager import DBManager
+from concierge.health_goals import HealthGoalsManager
+
+db = DBManager()
+goals_manager = HealthGoalsManager(db=db)
 
 # Key comes from .env (gitignored) so it never lands in a shell profile or a commit.
 _env = pathlib.Path(__file__).parent / ".env"
@@ -30,12 +36,13 @@ if _env.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
-if not os.environ.get("GEMINI_API_KEY"):
-    raise SystemExit("\nNo GEMINI_API_KEY.\n  put it in .env  ->  GEMINI_API_KEY=...\n")
 
-LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")
-FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")
-TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")
+api_key = os.environ.get("GEMINI_API_KEY", "")
+
+# Exact model IDs from the problem statement.
+LIVE  = os.environ.get("MODEL_LIVE",  "gemini-3.8-live")            # the coach
+TTS   = os.environ.get("MODEL_TTS",   "gemini-3.8-flash-tts")       # avatar narration
+FLASH = os.environ.get("MODEL_FLASH", "gemini-3.8-flash")           # plan + script
 VOICE = os.environ.get("GEMINI_VOICE", "Puck")
 LANG  = os.environ.get("GEMINI_LANG", "en-US")   # it drifted into Spanish without this
 FORM_EVERY = float(os.environ.get("FORM_EVERY", "2.5"))   # seconds between form checks
@@ -46,28 +53,19 @@ log = logging.getLogger("coach")
 for _noisy in ("httpx", "google_genai.models", "google_genai"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-app = FastAPI()
-STARTED = time.strftime("%H:%M:%S")
-SESSIONS = {"n": 0, "seq": 0}     # if this ever exceeds 1, you have two coaches talking
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"],
-                      http_options={"api_version": "v1alpha"})
 
-CONFIG = types.LiveConnectConfig(
-    response_modalities=["AUDIO"],
-    system_instruction=types.Content(parts=[types.Part(text=SYSTEM)]),
-    tools=tools(),
-    speech_config=types.SpeechConfig(
-        language_code=LANG,
-        voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
-    # Left at defaults deliberately. START_SENSITIVITY_LOW was tried to cut false
-    # barge-ins from room noise and it stopped the model registering speech at all;
-    # pinning language_codes on the INPUT transcription is unverified against this
-    # model, so neither is worth risking. English is enforced in the prompt and on
-    # the output voice instead.
-    output_audio_transcription=types.AudioTranscriptionConfig(),
-    input_audio_transcription=types.AudioTranscriptionConfig(),
-)
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],)
+SESSIONS = {"n": 0, "seq": 0}     # if this ever exceeds 1, you have two coaches talking
+
+client = genai.Client(api_key=api_key or "DUMMY_KEY_FOR_INIT",
+                      http_options={"api_version": "v1alpha"}) if api_key else None
+STARTED = time.strftime("%H:%M:%S")
 FORM_CFG = types.GenerateContentConfig(
     response_mime_type="application/json", temperature=0.3,
     max_output_tokens=900,          # 400 truncated the JSON mid-string
@@ -88,14 +86,109 @@ def parse_form(text: str) -> dict:
     return out
 
 
+def get_live_config(user_id: str = "default_user") -> types.LiveConnectConfig:
+    sys_text = build_system_prompt(user_id=user_id)
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        system_instruction=types.Content(parts=[types.Part(text=sys_text)]),
+        tools=tools(),
+        speech_config=types.SpeechConfig(
+            language_code=LANG,
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE))),
+        # Left at defaults on purpose: START_SENSITIVITY_LOW stopped the model
+        # registering speech at all, and language_codes on the INPUT transcription
+        # is unverified against this model. English is pinned above and in the prompt.
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+
+
+CONFIG = get_live_config("default_user")
+
+
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")
 
 
+@app.get("/profile")
+async def profile_page():
+    return FileResponse("static/profile.html")
+
+
+class HealthGoalRequest(BaseModel):
+    input_text: str
+    user_id: str = "default_user"
+
+
+class CompleteWorkoutRequest(BaseModel):
+    user_id: str = "default_user"
+    routine_id: str | None = None
+    routine_title: str | None = None
+    duration_min: int = 15
+    reps: int = 40
+    notes: str = ""
+
+
+@app.get("/api/profile/{user_id}")
+async def get_profile(user_id: str = "default_user"):
+    user = db.get_user(user_id) or {}
+    progress = db.get_user_progress(user_id)
+    flags = user.get("orthopedic_flags", [])
+    focus = "knee_rehab" if "knee_pain" in flags else "posterior_chain_mobility"
+    recommended_routines = db.query_local_routines(
+        focus=focus,
+        exclude_tags=["deep_flexion", "high_impact"] if "knee_pain" in flags else None
+    )
+    return {
+        "user": user,
+        "progress": progress,
+        "health_goals": user.get("health_goals", []),
+        "healthcare_recommendations": user.get("healthcare_recommendations", []),
+        "recommended_routines": recommended_routines
+    }
+
+
+@app.post("/api/profile/{user_id}/goals")
+async def update_goals(user_id: str, req: HealthGoalRequest):
+    result = goals_manager.process_and_update_goals(raw_goals_input=req.input_text, user_id=user_id)
+    result["progress"] = db.get_user_progress(user_id)
+    return result
+
+
+@app.post("/api/profile/{user_id}/workout/complete")
+async def complete_workout(user_id: str, req: CompleteWorkoutRequest):
+    result = db.log_completed_workout(
+        user_id=user_id,
+        routine_id=req.routine_id,
+        routine_title=req.routine_title or "Live AI Trainer Session",
+        duration_min=req.duration_min,
+        reps_completed=req.reps,
+        notes=req.notes
+    )
+    result["progress"] = db.get_user_progress(user_id)
+    return result
+
+
+@app.get("/api/linked_profile")
+async def linked_profile(user_id: str = "default_user"):
+    """Returns the linked health goals and constraints from the Profile Hub."""
+    context = get_user_profile_context(user_id)
+    return {"linked": bool(context), "context": context}
+
+
 @app.websocket("/live")
 async def live(ws: WebSocket):
     await ws.accept()
+    if not client:
+        await ws.send_json({
+            "t": "error",
+            "d": "GEMINI_API_KEY is not set in live-coach/.env. Please add your key to launch Gemini 3.8 Live."
+        })
+        await ws.close()
+        return
+
     SESSIONS["seq"] += 1
     SESSIONS["n"] += 1
     sid = SESSIONS["seq"]
@@ -107,8 +200,11 @@ async def live(ws: WebSocket):
           "paused": False, "last_cue": "", "framing_warned": False}
     counters = {"audio": 0, "frames": 0}
 
+    user_id = ws.query_params.get("user_id", "default_user")
+    live_cfg = get_live_config(user_id)
+
     try:
-        async with client.aio.live.connect(model=LIVE, config=CONFIG) as session:
+        async with client.aio.live.connect(model=LIVE, config=live_cfg) as session:
             log.info("live open  #%d  live=%s flash=%s voice=%r  (open sessions: %d)",
                      sid, LIVE, FLASH, VOICE, SESSIONS["n"])
             await ws.send_json({"t": "ready", "sid": sid, "open": SESSIONS["n"]})
@@ -264,7 +360,7 @@ async def live(ws: WebSocket):
     except WebSocketDisconnect:
         log.info("client disconnected (#%d)", sid)
     except Exception:
-        log.error("session failed\n%s", traceback.format_exc())
+        traceback.print_exc()
         try:
             await ws.send_json({"t": "error", "d": traceback.format_exc()[-400:]})
         except Exception:
@@ -309,4 +405,13 @@ async def health():
             "vad": "defaults", "sessions_open": SESSIONS["n"]}
 
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", "8080"))
+    log.info(f"Starting server on 0.0.0.0:{port}")
+    uvicorn.run("app:app", host="0.0.0.0", port=port, log_level="info")
+

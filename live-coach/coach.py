@@ -5,9 +5,12 @@ those come from the client's motion detector and a parallel gemini-3.8-flash loo
 which are both far better at it than a 1.4fps conversational stream. Keeping Live's
 job small is what stops it stalling mid-session.
 """
+import json
+import os
+import sqlite3
 from google.genai import types
 
-SYSTEM = """You are a personal trainer standing in the room with someone, talking to
+BASE_SYSTEM = """You are a personal trainer standing in the room with someone, talking to
 them out loud while they work out. You are a person, not a monitor.
 
 ALWAYS SPEAK ENGLISH. Every word you say is in English, no matter what you think you
@@ -39,6 +42,61 @@ WHAT YOU DO
 - set_plan once, after they tell you their time and target.
 - start_exercise when they begin a movement.
 - end_exercise when that set is done."""
+
+
+def get_user_profile_context(user_id: str = "default_user") -> str:
+    """Reads persistent user profile and health goals from the linked Personalized Workout state store."""
+    db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "database", "concierge_state.db"))
+    if not os.path.exists(db_path):
+        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "personalized-workout", "database", "concierge_state.db"))
+    if not os.path.exists(db_path):
+        return ""
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT age_band, fitness_tier, target_duration_min, orthopedic_flags, health_goals
+            FROM users WHERE id = ?
+            """,
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return ""
+
+        age_band, fitness_tier, duration, raw_flags, raw_goals = row
+        flags = json.loads(raw_flags or "[]")
+        goals = json.loads(raw_goals or "[]")
+
+        profile_text = f"\n\nLINKED USER HEALTH PROFILE & CLINICAL CONSTRAINTS (From Profile Hub):\n"
+        profile_text += f"- Fitness Tier: {fitness_tier.upper()} | Target Session Duration: {duration} mins\n"
+        if goals:
+            profile_text += f"- Active Health Goals: {'; '.join(goals)}\n"
+        if flags:
+            profile_text += f"- Active Orthopedic Warnings: {', '.join(flags)}\n"
+            if "knee_pain" in flags:
+                profile_text += "  * KNEE PAIN CONTRAINDICATION: Enforce knee flexion under 60 deg. Immediately call demonstrate if knees cave inward (valgus collapse) or if squats exceed safe depth.\n"
+            if "lumbar_stiffness" in flags:
+                profile_text += "  * LUMBAR STIFFNESS: Enforce neutral spine. Stop and call demonstrate if lower back excessively arches, rounds, or shows shear strain.\n"
+            if "shoulder_impingement" in flags:
+                profile_text += "  * SHOULDER PROTECTION: Eliminate overhead pressing and heavy internal rotation.\n"
+
+        return profile_text
+    except Exception as e:
+        print(f"[Profile Link] Note: {e}")
+        return ""
+
+
+def build_system_prompt(user_id: str = "default_user") -> str:
+    return BASE_SYSTEM + get_user_profile_context(user_id)
+
+
+# Backward compatibility export
+SYSTEM = build_system_prompt()
 
 
 def tools() -> list[types.Tool]:

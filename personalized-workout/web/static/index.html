@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personalized Fitness - Profile & Progress Hub</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Top Global Header -->
+    <header class="app-header">
+        <div class="header-left">
+            <div class="logo-badge">
+                <span class="pulse-dot"></span>
+                <span class="logo-title">PULSE EDGE</span>
+            </div>
+            <div class="header-subtitle">Gemma 4 Edge Fitness Concierge & Workout Companion</div>
+        </div>
+
+        <div class="header-center">
+            <!-- Navigation Switcher -->
+            <nav class="view-nav">
+                <button class="nav-tab active" data-view="profile">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                    <span>Profile & Progress</span>
+                </button>
+                <button class="nav-tab" data-view="concierge">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                    <span>Gemma Edge Concierge</span>
+                </button>
+                <button class="nav-tab" data-view="live-workout">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                    <span>Live Companion View</span>
+                </button>
+            </nav>
+        </div>
+
+        <div class="header-right">
+            <!-- Top Corner Profile Indicator (from Mock) -->
+            <div class="profile-header-btn" id="topProfileBtn" title="View Profile & Progress">
+                <div class="profile-avatar">N</div>
+                <div class="profile-meta">
+                    <div class="profile-name">User Profile</div>
+                    <div class="profile-sub" id="headerProgressBadge">Day 0 • 0 Workouts</div>
+                </div>
+            </div>
+
+            <!-- Telemetry Indicator -->
+            <div class="telemetry-bar">
+                <div class="toggle-group" id="networkToggle">
+                    <button class="toggle-btn active" data-val="OFFLINE">OFFLINE</button>
+                    <button class="toggle-btn" data-val="ONLINE">ONLINE</button>
+                </div>
+                <span class="chip on-device-badge">⚡ Gemma 4 On-Device</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main View Container -->
+    <main class="content-container">
+
+        <!-- ======================================================== -->
+        <!-- VIEW 1: PROFILE & PROGRESS HUB (Primary Mission Focus)   -->
+        <!-- ======================================================== -->
+        <section class="app-view active" id="view-profile">
+            <div class="profile-dashboard">
+
+                <!-- Row 1: Profile Summary & Workout Count Progress -->
+                <div class="dashboard-grid-hero">
+                    <div class="hero-card profile-card">
+                        <div class="profile-card-header">
+                            <div class="large-avatar">👤</div>
+                            <div class="profile-identity">
+                                <h2>Personal Health Profile</h2>
+                                <p class="text-secondary">On-device encrypted state • SQLite edge store</p>
+                                <div class="profile-badges" id="profileBadgesList">
+                                    <span class="badge blue">Adult</span>
+                                    <span class="badge green">Intermediate</span>
+                                    <span class="badge purple" id="statusBadge">READY</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="quick-stats-row">
+                            <div class="stat-box">
+                                <span class="stat-number" id="totalWorkoutCount">0</span>
+                                <span class="stat-label">Workouts Completed</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-number" id="currentDayDisplay">Day 0</span>
+                                <span class="stat-label">Current Progression</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-number" id="streakDaysDisplay">0</span>
+                                <span class="stat-label">Day Active Streak</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Progress Bar & Timeline (Directly from Mock Image) -->
+                    <div class="hero-card timeline-card">
+                        <div class="timeline-card-header">
+                            <div>
+                                <h3>Workout Progress Timeline</h3>
+                                <p class="text-secondary">Day-by-day guided fitness path • Current day highlighted</p>
+                            </div>
+                            <button class="btn-complete-workout" id="completeWorkoutBtn">
+                                <span>✓ Log Today's Workout Complete</span>
+                            </button>
+                        </div>
+
+                        <!-- Horizontal Timeline matching sketch: (Day 0) -> (Day 1) -> (Day 2) -->
+                        <div class="timeline-track-container" id="timelineTrackContainer">
+                            <div class="timeline-track" id="timelineTrack">
+                                <!-- Populated dynamically -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Row 2: Voice Health Goals Input & Tracking -->
+                <div class="dashboard-grid-split">
+                    <div class="content-panel goals-panel">
+                        <div class="panel-header">
+                            <div>
+                                <h3>Health Goals Tracking</h3>
+                                <p class="text-secondary">Speak or type your fitness & physical readiness targets</p>
+                            </div>
+                            <span class="badge cyan">🎙️ Voice Supported</span>
+                        </div>
+
+                        <!-- Voice Input Box -->
+                        <div class="voice-input-card">
+                            <div class="voice-controls">
+                                <button type="button" class="mic-button" id="micBtn" title="Click to speak your health goals">
+                                    <div class="mic-icon">🎙️</div>
+                                    <div class="mic-ripple"></div>
+                                </button>
+                                <div class="voice-status-text">
+                                    <strong id="voiceStatusTitle">Tap microphone to speak goals</strong>
+                                    <p id="voiceStatusSubtitle" class="text-secondary">Web Speech API • Real-time on-device voice processing</p>
+                                </div>
+                            </div>
+
+                            <div class="voice-transcript-box">
+                                <textarea id="goalsInputText" placeholder="E.g., 'I want to eliminate lower back stiffness, build core stability, and keep up a daily 15-minute mobility habit.'" rows="3"></textarea>
+                            </div>
+
+                            <div class="voice-actions">
+                                <div class="voice-presets">
+                                    <span class="preset-label">Quick Voice Presets:</span>
+                                    <button class="voice-preset-btn" data-goal="I have knee pain and patellar tendonitis. I want to build knee stability and keep moving without joint pain.">🦵 Knee Rehab</button>
+                                    <button class="voice-preset-btn" data-goal="My lower back has severe stiffness from sitting at a desk all day. I need spinal decompression and core strength.">🧘 Back Decompression</button>
+                                    <button class="voice-preset-btn" data-goal="I am a senior looking for gentle joint mobility, functional balance, and light daily stamina.">👵 Senior Mobility</button>
+                                    <button class="voice-preset-btn" data-goal="Looking to improve cardiovascular stamina and functional strength with low impact routines.">⚡ Cardio & Tone</button>
+                                </div>
+                                <button class="btn-update-goals" id="saveGoalsBtn">
+                                    <span>Update Health Goals</span>
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Active Tracked Goals List -->
+                        <div class="active-goals-section">
+                            <div class="section-subhead">CURRENT TRACKED HEALTH GOALS:</div>
+                            <div class="goals-card-list" id="activeGoalsList">
+                                <div class="empty-hint">No health goals logged yet. Speak or type above to set your targets.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right Column: Healthcare Recommendations & Recommended Routines -->
+                    <div class="content-panel recs-panel">
+                        <!-- Healthcare Recommendations -->
+                        <div class="panel-header">
+                            <div>
+                                <h3>Healthcare Recommendations</h3>
+                                <p class="text-secondary">Clinical safety guidelines & contraindication boundaries</p>
+                            </div>
+                            <span class="badge amber">🛡️ Clinical Audit</span>
+                        </div>
+
+                        <div class="healthcare-recs-list" id="healthcareRecsList">
+                            <div class="rec-item">
+                                <div class="rec-icon">🩺</div>
+                                <div class="rec-content">
+                                    <strong>Neutral Spine Protocol</strong>
+                                    <p>Maintain natural lumbar curve; avoid loaded spinal flexion during fatigue.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recommended Routines matching Health Goals -->
+                        <div class="panel-header" style="margin-top:20px;">
+                            <div>
+                                <h3>Recommended Routines</h3>
+                                <p class="text-secondary">Curated offline routines derived from your health goals</p>
+                            </div>
+                            <span class="badge green">Offline Verified</span>
+                        </div>
+
+                        <div class="recommended-routines-list" id="recommendedRoutinesList">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Workout Logs -->
+                <div class="content-panel" style="margin-top:20px;">
+                    <div class="panel-header">
+                        <div>
+                            <h3>Completed Workout History</h3>
+                            <p class="text-secondary">Track session count, duration, and exercise completion</p>
+                        </div>
+                    </div>
+                    <div id="workoutHistoryList" class="workout-history-grid">
+                        <div class="empty-hint">No completed workouts logged yet. Complete today's session above to start tracking!</div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+
+        <!-- ======================================================== -->
+        <!-- VIEW 2: GEMMA EDGE CONCIERGE & SDAC INSPECTOR            -->
+        <!-- ======================================================== -->
+        <section class="app-view" id="view-concierge">
+            <div class="concierge-layout">
+                <!-- Chat Panel -->
+                <div class="chat-section">
+                    <div class="preset-scenarios">
+                        <div class="scenario-label">CONCIERGE SCENARIOS:</div>
+                        <div class="scenario-chips">
+                            <button class="chip-btn" data-prompt="I am an adult with bad knee pain and patellar tendonitis. Recommend a 15 min safe workout routine.">🦵 Knee Pain</button>
+                            <button class="chip-btn" data-prompt="I am a 72-year-old senior. Give me a high-intensity anaerobic HIIT circuit workout.">👵 Senior HIIT</button>
+                            <button class="chip-btn alert" data-prompt="I was about to workout but I suddenly have sharp radiating chest pain and dizziness.">🚨 Chest Pain</button>
+                            <button class="chip-btn" data-prompt="Check my squat form live using the camera and coach my depth in real time.">📹 Live Squat Form</button>
+                        </div>
+                    </div>
+
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="msg bot">
+                            <div class="msg-avatar">G4</div>
+                            <div class="msg-bubble">
+                                <p><strong>Gemma 4 Edge Fitness Concierge active.</strong></p>
+                                <p>Operating via Sense-Decide-Act-Check (SDAC) on local SQLite state.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chat-input-area">
+                        <form id="chatForm">
+                            <textarea id="userInput" placeholder="Ask Gemma 4 Edge for custom offline routines, form advice, or health guidelines..." rows="2"></textarea>
+                            <button type="submit" id="sendBtn" class="send-btn">
+                                <span>Send Turn</span>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- SDAC Inspector -->
+                <div class="inspector-section">
+                    <div class="inspector-tabs">
+                        <button class="tab-btn active" data-tab="pipeline">SDAC Pipeline</button>
+                        <button class="tab-btn" data-tab="json">JSON Schema</button>
+                        <button class="tab-btn" data-tab="state">SQLite State</button>
+                    </div>
+
+                    <div class="tab-content active" id="tab-pipeline">
+                        <div class="pipeline-container">
+                            <div class="sdac-card" id="card-sense">
+                                <div class="sdac-step-header">
+                                    <span class="step-num">STEP 1</span>
+                                    <span class="step-name">SENSE</span>
+                                    <span class="step-desc">Input & Telemetry</span>
+                                    <span class="step-badge" id="badge-sense">WAITING</span>
+                                </div>
+                                <div class="sdac-body" id="body-sense"><div class="empty-hint">Awaiting input...</div></div>
+                            </div>
+                            <div class="sdac-card" id="card-decide">
+                                <div class="sdac-step-header">
+                                    <span class="step-num">STEP 2</span>
+                                    <span class="step-name">DECIDE</span>
+                                    <span class="step-desc">Gemma Routing</span>
+                                    <span class="step-badge" id="badge-decide">WAITING</span>
+                                </div>
+                                <div class="sdac-body" id="body-decide"><div class="empty-hint">Routing branch...</div></div>
+                            </div>
+                            <div class="sdac-card" id="card-act">
+                                <div class="sdac-step-header">
+                                    <span class="step-num">STEP 3</span>
+                                    <span class="step-name">ACT</span>
+                                    <span class="step-desc">SQLite Tool Call</span>
+                                    <span class="step-badge" id="badge-act">WAITING</span>
+                                </div>
+                                <div class="sdac-body" id="body-act"><div class="empty-hint">Tool execution...</div></div>
+                            </div>
+                            <div class="sdac-card" id="card-check">
+                                <div class="sdac-step-header">
+                                    <span class="step-num">STEP 4</span>
+                                    <span class="step-name">CHECK</span>
+                                    <span class="step-desc">Deterministic Audit</span>
+                                    <span class="step-badge" id="badge-check">WAITING</span>
+                                </div>
+                                <div class="sdac-body" id="body-check"><div class="empty-hint">Safety audit...</div></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-content" id="tab-json">
+                        <pre class="json-viewer" id="jsonViewer">// Awaiting cycle execution...</pre>
+                    </div>
+
+                    <div class="tab-content" id="tab-state">
+                        <pre id="userStatePre" class="code-pre">Loading profile...</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        <!-- ======================================================== -->
+        <!-- VIEW 3: LIVE COMPANION VIEW (Mock Sketch Interface)      -->
+        <!-- ======================================================== -->
+        <section class="app-view" id="view-live-workout">
+            <div class="sketch-mockup-wrapper">
+                <div class="sketch-banner" style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <span style="font-size:0.9rem; font-weight:800; color:#60a5fa;">📱 Connected Live Real-Time Workout Tool (Gemini Live)</span>
+                        <span class="sketch-sub" style="display:block; margin-top:3px; color:#94a3b8;">Real-time camera form tracking & avatar interruption running on port 8001</span>
+                    </div>
+                    <a href="http://localhost:8001" target="_blank" style="background:linear-gradient(135deg, #2563eb, #7c3aed); color:white; padding:8px 16px; border-radius:8px; font-weight:700; text-decoration:none; display:inline-flex; align-items:center; gap:6px; box-shadow: 0 4px 12px rgba(37,99,235,0.4); font-size:0.8rem;">
+                        <span>🚀 Launch Live Coach (:8001)</span> &rarr;
+                    </a>
+                </div>
+
+                <div class="sketch-container">
+                    <!-- Left: Digital Coach Avatar & Subtitles -->
+                    <div class="sketch-col-left">
+                        <div class="sketch-card coach-box">
+                            <div class="sketch-badge">&lt; DIGITAL COACH &gt;</div>
+                            <div class="coach-avatar-display">
+                                <div class="coach-avatar-art">🧘‍♂️</div>
+                                <div class="coach-status-tag">Demonstrating View Here</div>
+                            </div>
+                            <div class="coach-subtitles-box">
+                                <span class="sub-label">Subtitles:</span>
+                                <div class="sub-text" id="liveSubtitlesText">"Maintain proud chest, unlock hips backward, track knees over toes."</div>
+                            </div>
+                        </div>
+
+                        <!-- Workout Summary -->
+                        <div class="sketch-card summary-box">
+                            <h4>Workout Summary</h4>
+                            <div class="summary-metrics">
+                                <div class="summary-metric">
+                                    <span class="sum-val" id="mockCorrectReps">12</span>
+                                    <span class="sum-lbl">Correct Reps</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="sum-val" id="mockTotalTime">03:45</span>
+                                    <span class="sum-lbl">Elapsed Time</span>
+                                </div>
+                                <div class="summary-metric">
+                                    <span class="sum-val" id="mockFormAccuracy">94%</span>
+                                    <span class="sum-lbl">Form Accuracy</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Camera Feed & Real-time Controls -->
+                    <div class="sketch-col-right">
+                        <div class="sketch-card camera-feed-box">
+                            <div class="camera-feed-header">
+                                <span class="cam-title">CAMERA FEED</span>
+                                <span class="badge blue" id="cameraStatusBadge">ACTIVE CAMERA</span>
+                            </div>
+
+                            <div class="camera-viewport" id="cameraViewport">
+                                <div class="camera-overlay">
+                                    <div class="skeleton-tracker">
+                                        <div class="tracker-point head"></div>
+                                        <div class="tracker-line torso"></div>
+                                        <div class="tracker-point l-knee"></div>
+                                        <div class="tracker-point r-knee"></div>
+                                    </div>
+                                    <div class="camera-center-notice">
+                                        <span>AI Pose & Rep Counter Active</span>
+                                        <small>Joint Angles: Knee 74° (Safe Range)</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Controls directly from sketch: Timer, Mute, Camera on/off, END button -->
+                            <div class="camera-controls-bar">
+                                <div class="ctrl-group">
+                                    <div class="timer-pill" id="liveTimerPill">
+                                        ⏱️ <span id="liveTimerText">03:45</span>
+                                    </div>
+                                    <button class="cam-ctrl-btn" id="muteBtn" title="Toggle audio cues">
+                                        🔊 Mute
+                                    </button>
+                                    <button class="cam-ctrl-btn" id="camToggleBtn" title="Camera On/Off (pause tracking when off)">
+                                        📷 Camera: ON
+                                    </button>
+                                </div>
+                                <button class="btn-end-workout" id="endWorkoutBtn">
+                                    🛑 END (Override)
+                                </button>
+                            </div>
+
+                            <div class="voice-stop-hint">
+                                🎙️ Note from design: <em>"Stop tracking only on voice command" or click END override.</em>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Offline Guide Reader Modal -->
+    <div class="modal" id="guideModal">
+        <div class="modal-backdrop" id="modalBackdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Offline Resource Guide</h3>
+                <button class="modal-close" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <pre id="guideMarkdownContent"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

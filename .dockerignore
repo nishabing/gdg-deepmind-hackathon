@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+*/.venv
+*/venv
+.git
+.gitignore
+.pytest_cache
+*.log
+personalized-workout/
