@@ -1,91 +1,80 @@
-# Live Trainer — PS2, Next-Gen Voice & Real-Time Audio
+# Live Coach: A Real-Time Gemini Flash Workout Workspace
 
-A coach that watches you through the camera, talks while you move, and — when your form
-breaks — **stops you, takes over the screen, and demonstrates the correction**.
+**Subtitle:** A camera-aware training workspace where Gemini 3.8 Flash checks movement in the background, while a voice coach and an animated demonstration help the user correct form without stopping to submit a prompt.
 
-The interruption is the novel beat. Every other fitness demo overlays a red skeleton and
-keeps going. This one cuts the camera, puts the avatar in front of you, shows the fix,
-and hands the camera back.
+**Selected track:** Problem Statement 1 — Frontier Intelligence at Flash Speed
+**Focus model:** `gemini-3.8-flash`
 
-## Run
+## Project overview
 
-    export GEMINI_API_KEY=...
-    source .venv/bin/activate        # already created, deps installed
-    uvicorn app:app --port 8000
+Live Coach turns a webcam workout into a continuous feedback loop rather than a prompt-and-response chat. While a user exercises, the browser samples movement, streams low-resolution camera frames to the server, and keeps a hands-free voice conversation open. A separate Gemini 3.8 Flash vision check evaluates the latest frame during an active exercise. A serious form verdict changes the workspace immediately: the camera feed is visually de-emphasized, the coach takes over the screen with a movement demonstration, and the live session resumes when the narration finishes.
 
-Open **http://localhost:8000**. That's it — no npm, no build step, one process.
+Gemini Flash is load-bearing: its ongoing visual judgments drive the correction state transition. The user does not have to notice an issue, describe it, or press Submit. Gemini Live provides the supporting real-time voice interface, but this submission is entered in Problem Statement 1 because the central technical contribution is continuous, asynchronous visual reasoning and action.
 
-## Files
+## How it works
 
-    app.py              FastAPI: serves the page, /live websocket, /demo_narration
-    coach.py            system prompt + the 7 tools  <- person 1 & 3 tune this
-    static/index.html   the entire UI: capture, playback, state machine
-    .venv/              ready to go
+1. **Start a session.** The browser requests microphone and camera access and opens one WebSocket to FastAPI. A single connection carries audio, camera frames, movement events, tool calls, captions, and playback audio.
+2. **Capture continuously.** Microphone audio is converted to 16 kHz mono PCM and sent in real time. The camera is sampled at 512 × 384, JPEG-encoded, and sent roughly every 700 ms. The browser also downsamples frames locally to estimate motion and detect movement cycles for the on-screen rep counter.
+3. **Reason in parallel.** Gemini Live handles the conversational audio and emits structured function calls such as `start_exercise` and `end_exercise`. Once an exercise is active, the server checks the latest available camera frame with Gemini 3.8 Flash every 2.5 seconds (configurable with `FORM_EVERY`). Flash returns a constrained JSON verdict: `good`, `minor`, or `serious`, with a concise cue and, for a serious issue, an error and correction.
+4. **Act on the result.** Minor cues are routed to the voice coach. A serious verdict triggers a demonstration takeover, pauses the workout clock and form loop, and prompts the coach to explain the correction. The browser animates the corresponding pose and returns to the workout after the voice turn completes. A timeout prevents a stalled narration from leaving the user on the takeover screen.
+5. **Persist progress.** SQLite stores the user profile, health goals, workout history, curated routines and guides. The FastAPI profile endpoints power the progress view and record completed sessions.
+
+The browser/server event stream—not text parsed from conversational prose—is the control plane for the live UI. Structured tool calls start and end exercise tracking; structured Flash output drives form feedback and takeover.
+
+## Architecture and implementation
+
+| File | Responsibility |
+|---|---|
+| `app.py` | FastAPI app, Gemini clients/configuration, profile endpoints, `/live` WebSocket, parallel Flash form watcher, and health endpoint. |
+| `coach.py` | Voice-coach behavior, Gemini Live function declarations, linked health-profile context, and the JSON form-check prompt. |
+| `static/index.html` | Single-page real-time workspace: camera/mic capture, local motion-cycle counter, audio playback, captions, status and progress UI, animation, pause controls, and takeover/resume state machine. |
+| `static/profile.html` | Profile, goals, recommendations, and workout-progress interface. |
+| `database/db_manager.py`, `database/schema.sql`, `database/seed_data.py` | SQLite initialization and migrations, user/workout state, routines, resource guides, queued handoffs, and seed data. |
+| `concierge/` | Separate SDAC/Gemma-oriented runtime and safety-audit prototype. It is not the active `/live` coaching or Gemini Flash form-check path. |
+| `assets/guides/` | Local movement and form reference material. |
+
+The live path is deliberately split by latency and responsibility. Live handles conversation; Flash evaluates sampled visual evidence; the browser handles immediate movement-cycle detection and UI transitions. This keeps video reasoning out of the conversational stream and lets the coach respond to the result without waiting for a user turn. Camera and microphone controls act as an explicit pause: the server clears the held frame, skips checks, and asks the coach to wait.
+
+## Engineering choices and challenges
+
+- **Responsive feedback without analyzing every frame:** the browser sends frames frequently, while the server evaluates only the newest frame on a configurable interval. This bounds model-call frequency while keeping the visual check active during exercise.
+- **Avoiding false visual claims:** the form prompt asks Gemini to judge only what is visible, return `good` for unclear frames, and use `serious` only when confident. Serious interventions are rate-limited to one every 20 seconds.
+- **Separating movement counting from vision:** motion cycles are estimated locally from low-resolution luminance differences, with frame-wide brightness changes removed and a quiet-period noise floor. This is a lightweight interaction signal, not pose estimation; it is not used as evidence for Gemini's form verdict.
+- **Reliable voice streaming:** the browser uses the actual microphone AudioContext sample rate and explicitly downsamples to 16 kHz rather than assuming the browser honored a requested rate. Echo cancellation and noise suppression are enabled to reduce the coach hearing its own playback.
+- **Recoverable UI state:** tool calls, form events, and audio completion drive explicit session states. Pausing clears stale visual input; a narration timeout hands control back instead of trapping the user in the demonstration state.
+- **Persistent but distinct profile support:** workout progress and profile data are stored locally in SQLite. The separate `concierge/` SDAC implementation should not be mistaken for an on-device Gemma execution path in this live application.
 
 ## Models
 
-| Model | Where |
+| Model ID | Role in this application |
 |---|---|
-| `gemini-3.8-live` | the coach — voice in, voice out, video in, barge-in |
-| `gemini-3.8-flash-tts` | the avatar's demonstration narration |
-| `gemini-3.8-flash` | workout plan + narration script |
-| `gemini-3.1-flash-lite-image` | generated demonstration stills (person 2, optional) |
+| `gemini-3.8-flash` | Asynchronous image-based form checks during active exercises. |
+| `gemini-3.8-live` | Real-time spoken coach, audio input/output, transcription, interruption handling, and function calls. |
+| `gemini-3.8-flash-tts` | Exposed by the reference `/demo_narration` endpoint; not used by the default demonstration flow. |
 
-IDs are at the top of `app.py`.
+Model IDs can be overridden with `MODEL_FLASH`, `MODEL_LIVE`, and `MODEL_TTS`. The Gemini API key is supplied through `GEMINI_API_KEY`.
 
-## Why PS2, not PS1
+## Run locally
 
-PS2's bar: *"if your app works just as well typed into a chatbox, you aren't pushing the
-stack."* You cannot type mid-squat. Say that to the judge.
+Python 3.11 or newer is recommended.
 
-## How it works, one paragraph
+```bash
+cd live-coach
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+export GEMINI_API_KEY="your-api-key"
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
 
-The browser streams 16k mic audio and a 512×384 JPEG every 700ms over one WebSocket.
-Live sends back three things: speech, a **text transcript of that speech** (captions),
-and **tool calls**. The tool calls are the control plane — `rep`, `form_ok`,
-`demonstrate` — and they drive the UI directly. The model speaks through audio and acts
-through tools, so the page never guesses intent from prose.
+Open <http://localhost:8000> and allow camera and microphone access. Keep the camera on the exercising user and use headphones to reduce audio feedback. The SQLite database initializes and seeds itself on startup. To deploy on Google Cloud Run, configure `GEMINI_API_KEY` and run `./deploy.sh` with `gcloud` authenticated.
 
-## Who builds what
+## Limitations and safety
 
-- **You** — it runs. Get an audio round-trip first, then frames, then the takeover.
-- **Person 1 — the plan.** `gemini-3.8-flash` from demographics. Fastest path: build the
-  plan JSON and paste it into `SYSTEM` in `coach.py` at connect time. Don't make it a
-  tool unless you have time.
-- **Person 2 — the avatar.** Mounts in `#avatarSlot` in `index.html`. The contract
-  exists: `/demo_narration` returns `{script, wav_b64}`. Sync the animation to that clip.
+This is a hackathon prototype, not a medical device or a substitute for a qualified trainer or clinician. A single sampled webcam frame cannot reliably assess every exercise, body position, or injury risk; lighting, framing, occlusion, and network/model latency can affect feedback. The local motion-cycle counter is heuristic, and its “clean rep” label is not an independently verified form assessment. Users should stop if they feel pain or unwell. The live coaching path requires a network connection and Gemini API access; the separate SQLite/SDAC prototype does not make this camera-coaching workflow offline.
 
-## Timeline
+## Kaggle submission assets
 
-- **T+0:20** — say hello, hear a reply. Nothing else matters until this works.
-- **T+0:50** — frames flowing, coach reacts to what it sees, captions rendering.
-- **T+1:20** — `demonstrate` fires and the screen takes over. **This is the demo.**
-- **T+1:45** — freeze. Record.
-
-## The demo
-
-Headphones — without them the coach hears itself through the speakers and interrupts
-itself. Echo cancellation is on and it is not enough in a loud room.
-
-1. "I've got ten minutes, let's do legs." Plan fills the rail.
-2. Start moving. Reps tick, form chip goes green, coach encourages.
-3. **Deliberately break form.** Camera cuts, avatar takes the screen, demonstrates,
-   camera returns.
-4. Talk over the coach mid-sentence: "can we skip to lunges?" It stops instantly.
-
-End on 4. Ten seconds of barge-in is the clearest proof you're on the audio stack
-rather than wrapping it.
-
-## Space problem — settle this first
-
-Squats need the laptop 6–8 feet back with your whole body in frame. Test your actual
-demo spot before writing anything. If framing doesn't work, switch to **overhead press
-or lateral raise** — elbow flare, back arch and momentum swing are all visible from the
-waist up at desk distance. Same code, same beats, no floor space.
-
-## Cut list, in order
-
-1. `#heard` line ("you: …") — cosmetic
-2. Plan rail → one current-exercise chip
-3. `form_ok` / `form_error` chips → keep `demonstrate` only
-4. Rep counting → drop it. Cheaper than a visibly wrong count.
+- **Public code repository:** this repository, with `live-coach/` as the application directory.
+- **Live demo:** attach the deployed application URL to the Kaggle Writeup.
+- **Proof of work:** this README describes the implemented architecture, model roles, data flow, engineering decisions, and limitations. Keep the Kaggle Writeup within the 1,500-word limit and attach the repository and demo before submitting.
