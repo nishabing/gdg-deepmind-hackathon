@@ -607,6 +607,12 @@ let MIN_HI=3;              // samples of real movement (x120ms) before it counts
 let REFRACTORY=1200;
 let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
 let calibSamples=[], lastReject=0;
+// A tilt pauses at each end, so it makes clean bursts of motion. A rotation does
+// not -- it is continuous, the magnitude never drops, and the burst detector sees
+// one long burst and reports one rep. So while movement is continuous we count the
+// CENTROID of the motion swinging side to side instead: one swing, one rep.
+let cx=0.5, cxBase=0.5, cxSide=0, continuous=false;
+const CX_BAND=0.09, CONT_AFTER=14;   // 14 samples ~ 1.7s of unbroken movement
 // Everything the rep detector decides goes to the server log too, so one log
 // shows the whole picture instead of half of it living in the browser.
 const SLOG=m=>{ L('info',m); ws?.send(JSON.stringify({t:'log',d:m})); };
@@ -627,15 +633,20 @@ function sampleMotion(){
   const n=64*48, luma=new Uint8Array(n);
   for(let i=0,j=0;i<px.length;i+=4,j++) luma[j]=(px[i]*.299+px[i+1]*.587+px[i+2]*.114)|0;
 
-  let score=0;
+  let score=0, wsum=0, wx=0;
   if(prevLuma){
     // Remove the frame-wide mean shift first. A webcam pointed at a bright window
     // rides its auto-exposure up and down, lifting every pixel at once -- not motion,
     // but indistinguishable from it unless you subtract it.
     let sum=0; for(let i=0;i<n;i++) sum+=luma[i]-prevLuma[i];
     const mean=sum/n;
-    let t=0; for(let i=0;i<n;i++) t+=Math.abs(luma[i]-prevLuma[i]-mean);
+    let t=0;
+    for(let i=0;i<n;i++){
+      const d=Math.abs(luma[i]-prevLuma[i]-mean);
+      t+=d; wsum+=d; wx+=d*(i%64);        // horizontal centre of where motion is
+    }
     score=t/n;
+    if(wsum>0) cx = cx*0.5 + (wx/wsum/63)*0.5;
   }
   prevLuma=luma;
   smooth = smooth*0.55 + score*0.45;
@@ -674,7 +685,21 @@ function sampleMotion(){
     else above=0;
   }else{
     if(smooth>hi) hiN++;            // time genuinely moving, not the smoothing tail
+
+    // Unbroken movement means a continuous exercise. Count its swings.
+    if(hiN>=CONT_AFTER){
+      if(!continuous){ continuous=true; cxBase=cx; cxSide=0;
+        SLOG('continuous movement — counting swings, not bursts'); }
+      cxBase = cxBase*0.97 + cx*0.03;
+      const d = cx-cxBase, now=Date.now();
+      if(cxSide<=0 && d>CX_BAND){
+        cxSide=1;
+        if(inWorkout && !paused && now-lastRepAt>REFRACTORY){ lastRepAt=now; countRep(hiN); }
+      } else if(cxSide>=0 && d<-CX_BAND) cxSide=-1;
+    }
+
     if(smooth<lo){
+      continuous=false;
       const now=Date.now();
       const longEnough = hiN>=MIN_HI, spaced = now-lastRepAt>REFRACTORY;
       repState='quiet'; above=0;
