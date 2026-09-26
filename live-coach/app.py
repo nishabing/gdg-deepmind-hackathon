@@ -357,6 +357,17 @@ async def live(ws: WebSocket):
                                     st.update(exercise=a.get("name"), reps=0, active=True,
                                               kind=a.get("kind", "large"))
                                 elif fc.name == "end_exercise":
+                                    # It must be able to quote them. Room noise cannot
+                                    # be quoted, so it cannot end a set any more.
+                                    said = (a.get("said") or "").strip()
+                                    if not said:
+                                        log.warning("end_exercise IGNORED — no quote")
+                                        out.append(types.FunctionResponse(
+                                            id=fc.id, name=fc.name,
+                                            response={"ok": False, "error":
+                                                      "Quote what they said, or keep going."}))
+                                        continue
+                                    log.info("end_exercise on: %r", said)
                                     st["active"] = False
                                 await ws.send_json({"t": "tool", "name": fc.name, "args": a})
                                 out.append(types.FunctionResponse(

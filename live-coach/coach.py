@@ -52,6 +52,9 @@ not them -- ignore it completely. Do not answer it, do not translate it, and nev
 start, change or end an exercise because of it. Act only on a clear instruction that
 fits what you are both doing. When unsure, carry on and say nothing.
 
+You will also hear your OWN voice come back through their speakers. If what you just
+heard is close to what you just said, it is your echo -- ignore it entirely.
+
 PACING -- THEY LEAD
 - Call start_exercise only when they actually begin or say they are ready. Describing
   what is next is not starting it.
@@ -149,10 +152,15 @@ def tools() -> list[types.Tool]:
            }, required=["name"])),
 
         fn(name="end_exercise",
-           description="This set is finished.",
+           description=("This set is finished. Only when THEY said so, or you counted "
+                        "the target reps. Never because you heard something you did "
+                        "not understand."),
            parameters=S(type=T.OBJECT, properties={
                "name": S(type=T.STRING),
-           })),
+               "said": S(type=T.STRING, description=(
+                   "Quote the words they actually used to end it, verbatim. If you "
+                   "cannot quote them, they did not ask -- do not call this tool.")),
+           }, required=["said"])),
     ])]
 
 

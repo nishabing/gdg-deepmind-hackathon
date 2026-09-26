@@ -310,7 +310,9 @@ body[data-dbg=on] #dbg{display:block}
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
      <b style="color:#626b80">D</b> log · <b style="color:#626b80">] [</b> rep
      sensitivity · <b style="color:#626b80">, .</b> rep length ·
-     <b style="color:#626b80">'</b> mic gate (off)</small>
+     <b style="color:#626b80">'</b> mic gate (on)</small>
+     <br><small style="color:#39404e">Stay quiet for two seconds after starting —
+     it measures the room.</small>
 </div>
 
 <div class="report">
@@ -356,10 +358,12 @@ addEventListener('keydown',e=>{
 
 let ws,stream,micCtx,outCtx,analyser,frameTimer,motionTimer,clockTimer,playHead=0,sources=[];
 let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
-// Mic noise gate, OFF by default. Gating on level assumes the speaker is well
-// above the room; in a loud hall they often are not, so it silenced the user along
-// with the chatter. Turn it on with ' only if the room is actually getting through.
-let gateOn=false, micFloor=0.004, gateUntil=0, GATE_MULT=2.2; const preroll=[];
+// Mic noise gate. The first version guessed the room's level and cut the user off.
+// This one MEASURES it: two seconds of the actual room at session start, floor set
+// at the 95th percentile of that. Press ' to disable if it ever gets in the way.
+let gateOn=true, micFloor=0.02, gateUntil=0, GATE_MULT=1.8;
+let gateCalib=[], gateCalibUntil=0, gateOpen=false;
+const preroll=[];
 // Workout time, not wall time: accumulate only while they're actually working.
 let activeMs=0,runningSince=null,inWorkout=false,demoTimer=null;
 let micOn=true,camOn=true;
@@ -506,6 +510,7 @@ function startMic(){
   micCtx.resume();                       // Chrome can hand back a suspended context
   const inRate=micCtx.sampleRate;
   L('info',`mic context ${inRate}Hz -> downsampling to ${MIC_RATE}Hz`);
+  gateCalibUntil=Date.now()+2000;   // measure the room before sending anything
   $('micRate').textContent=inRate/1000+'k';
 
   const src=micCtx.createMediaStreamSource(stream);
@@ -531,16 +536,34 @@ function startMic(){
     // Noise gate. In a crowded hall the room's conversation reaches the mic, and
     // the model transcribes it, answers it, and treats it as the user interrupting.
     // Only the person in front of the laptop should get through.
+    const now=Date.now();
+    if(now<gateCalibUntil){          // measuring the room; send nothing yet
+      gateCalib.push(rms);
+      $('micBar').dataset.hot='no';
+      return;
+    }
+    if(gateCalib.length){
+      const sorted=[...gateCalib].sort((a,b)=>a-b);
+      micFloor=Math.max(0.006, sorted[Math.floor(sorted.length*0.95)]);
+      gateCalib=[];
+      SLOG(`mic floor measured: ${micFloor.toFixed(4)} `+
+           `(opens above ${(micFloor*GATE_MULT).toFixed(4)})`);
+    }
+
     if(gateOn){
-      const now=Date.now();
-      if(rms>micFloor*GATE_MULT+0.002) gateUntil=now+900;   // generous hangover
-      else if(rms<micFloor*2) micFloor=micFloor*0.995+rms*0.005;
-      if(now>=gateUntil){
-        preroll.push(i16); if(preroll.length>8) preroll.shift();
+      // While the coach is talking its voice leaks back in and reads as the user
+      // interrupting. Raise the bar then, so real barge-in still works but echo does not.
+      const duck = sources.length ? 2.5 : 1;
+      if(rms > micFloor*GATE_MULT*duck) gateUntil=now+800;   // hangover keeps words whole
+      const open = now<gateUntil;
+      if(open!==gateOpen){ gateOpen=open;
+        if(open) SLOG(`mic OPEN (${rms.toFixed(4)})`); }
+      if(!open){
+        preroll.push(i16); if(preroll.length>6) preroll.shift();
         $('micBar').dataset.hot='no';
         return;
       }
-      // Gate just opened: send the lead-in so the first syllable is not clipped.
+      // Send the lead-in so the first syllable is not clipped.
       for(const c of preroll) ws.send(JSON.stringify({t:'audio',d:b64(c.buffer)}));
       preroll.length=0;
     }
@@ -670,7 +693,7 @@ function countRep(dur){
   document.querySelector('.repbox').animate(
     [{scale:1},{scale:1.1},{scale:1}],{duration:200,easing:'ease-out'});
   ws?.send(JSON.stringify({t:'rep',n}));
-  L('info',`rep ${n}  (${(dur*0.12).toFixed(1)}s moving, floor ${noise.toFixed(2)})`);
+  SLOG(`REP ${n} — ${(dur*0.12).toFixed(2)}s of movement (floor ${noise.toFixed(2)})`);
 }
 
 function sendFrame(){
@@ -689,7 +712,7 @@ addEventListener('keydown',e=>{
   if(e.key==='['){SENS=Math.min(6,SENS+0.15);L('info','LESS sensitive: x'+SENS.toFixed(2))}
   // ; ' adjust the mic noise gate for the room you are actually in
   // ' toggles the mic gate; ; loosens it while it is on
-  if(e.key==="'"){gateOn=!gateOn; micFloor=0.004; gateUntil=0; preroll.length=0;
+  if(e.key==="'"){gateOn=!gateOn; gateUntil=0; preroll.length=0;
     L('warn',`mic gate ${gateOn?'ON — room noise filtered':'OFF — everything sent'}`)}
   if(e.key===';'){GATE_MULT=Math.max(1.2,GATE_MULT-0.3);
     L('info',`gate looser: x${GATE_MULT.toFixed(1)} (floor ${micFloor.toFixed(4)})`)}
