@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personalized Fitness - Profile & Progress Hub</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #070810;
+            --bg-secondary: #0d1018;
+            --bg-card: #11151f;
+            --border-color: #1d2231;
+            --text-primary: #eef1f6;
+            --text-secondary: #9fb4d8;
+            --text-muted: #626b80;
+            --accent-blue: #5aa9ff;
+            --accent-green: #3ddc84;
+            --accent-rose: #ff5d6c;
+            --accent-cyan: #22d3ee;
+            --font-main: 'Plus Jakarta Sans', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 24px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+        }
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 16px;
+        }
+        .pulse-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+        }
+        .btn-return {
+            background: rgba(90, 169, 255, 0.15);
+            border: 1px solid var(--accent-blue);
+            color: var(--accent-blue);
+            padding: 7px 14px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 13px;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-return:hover {
+            background: var(--accent-blue);
+            color: #070810;
+        }
+        .main-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .grid-hero {
+            display: grid;
+            grid-template-columns: 1fr 1.6fr;
+            gap: 16px;
+        }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 18px 20px;
+        }
+        .profile-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .avatar {
+            width: 48px; height: 48px; border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-blue), #9333ea);
+            display: grid; place-items: center; font-size: 20px;
+        }
+        .stats-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            margin-top: 16px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+        }
+        .stat-val {
+            font-family: var(--font-mono);
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--accent-cyan);
+            display: block;
+        }
+        .stat-lbl {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        /* Timeline */
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+        .timeline-header h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+        .btn-complete {
+            background: linear-gradient(135deg, var(--accent-green), #059669);
+            border: none;
+            color: #04180d;
+            padding: 7px 14px;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .timeline-track {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+        .day-node {
+            width: 40px; height: 40px; border-radius: 50%;
+            display: grid; place-items: center;
+            border: 2px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .day-node.done {
+            border-color: var(--accent-green);
+            background: rgba(61, 220, 132, 0.15);
+            color: var(--accent-green);
+        }
+        .day-node.now {
+            border-color: var(--accent-blue);
+            background: rgba(90, 169, 255, 0.25);
+            color: #fff;
+            transform: scale(1.15);
+            box-shadow: 0 0 14px rgba(90, 169, 255, 0.6);
+        }
+        .day-arrow { color: var(--border-color); font-weight: 900; }
+        .day-arrow.done { color: var(--accent-green); }
+        /* Split */
+        .grid-split {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        /* Voice input */
+        .mic-box {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+        .mic-btn {
+            width: 44px; height: 44px; border-radius: 50%;
+            border: none; background: var(--accent-blue);
+            font-size: 18px; cursor: pointer; display: grid; place-items: center;
+            transition: all 0.2s ease;
+        }
+        .mic-btn.listening {
+            background: var(--accent-rose);
+            box-shadow: 0 0 16px rgba(255, 93, 108, 0.8);
+            animation: pulseMic 1s infinite alternate;
+        }
+        @keyframes pulseMic { from{transform:scale(1);} to{transform:scale(1.1);} }
+        .voice-text textarea {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 13px;
+            resize: none;
+            outline: none;
+        }
+        .btn-save-goals {
+            background: var(--accent-blue);
+            border: none; color: #070810;
+            padding: 8px 16px; border-radius: 6px;
+            font-weight: 700; font-size: 12px; cursor: pointer;
+            align-self: flex-end; margin-top: 8px;
+        }
+        .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .preset-chip {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            color: var(--text-secondary); padding: 4px 8px; border-radius: 4px;
+            font-size: 11px; cursor: pointer;
+        }
+        .preset-chip:hover { border-color: var(--accent-blue); color: #fff; }
+        .goal-item {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            border-left: 3px solid var(--accent-cyan); padding: 10px 14px;
+            border-radius: 6px; margin-top: 8px; font-size: 13px;
+        }
+        .rec-item {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            padding: 10px 14px; border-radius: 6px; margin-top: 8px;
+            font-size: 12px; color: var(--text-secondary);
+        }
+        .routine-item {
+            background: var(--bg-secondary); border: 1px solid var(--border-color);
+            padding: 12px 14px; border-radius: 8px; margin-top: 10px;
+        }
+        .routine-title { font-weight: 700; font-size: 14px; color: var(--text-primary); }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-title">
+            <span class="pulse-dot"></span>
+            <span>Personal Health Profile & Progress Hub</span>
+        </div>
+        <a href="/" class="btn-return">← Back to Live Trainer</a>
+    </header>
+
+    <main class="main-container">
+        <!-- Row 1: Profile & Progress Timeline -->
+        <div class="grid-hero">
+            <div class="card">
+                <div class="profile-row">
+                    <div class="avatar">👤</div>
+                    <div>
+                        <h2 style="font-size: 16px;">User Health Profile</h2>
+                        <p style="font-size: 12px; color: var(--text-muted);">On-device SQLite state</p>
+                    </div>
+                </div>
+                <div class="stats-row">
+                    <div>
+                        <span class="stat-val" id="valWorkouts">0</span>
+                        <span class="stat-lbl">Workouts Done</span>
+                    </div>
+                    <div>
+                        <span class="stat-val" id="valDay">Day 0</span>
+                        <span class="stat-lbl">Current Day</span>
+                    </div>
+                    <div>
+                        <span class="stat-val" id="valStreak">0</span>
+                        <span class="stat-lbl">Day Streak</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="timeline-header">
+                    <div>
+                        <h3>Workout Progression Timeline</h3>
+                        <p style="font-size: 11px; color: var(--text-muted);">Current active day highlighted</p>
+                    </div>
+                    <button class="btn-complete" id="btnCompleteToday">✓ Log Today's Workout</button>
+                </div>
+                <div class="timeline-track" id="timelineTrack">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2: Voice Goals & Healthcare Recommendations -->
+        <div class="grid-split">
+            <!-- Left: Health Goals (Voice Enabled) -->
+            <div class="card">
+                <h3 style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 12px;">
+                    Health Goals Tracking (🎙️ Voice Enabled)
+                </h3>
+                <div class="mic-box">
+                    <button class="mic-btn" id="micBtn" title="Click to speak your health goals">🎙️</button>
+                    <div>
+                        <strong id="micTitle" style="font-size: 13px;">Tap mic to speak goals</strong>
+                        <p id="micSubtitle" style="font-size: 11px; color: var(--text-muted);">Web Speech API • Real-time on-device voice</p>
+                    </div>
+                </div>
+
+                <div class="voice-text">
+                    <textarea id="goalsInput" rows="2" placeholder="E.g., 'Rehabilitate my knees and fix lower back stiffness with 15 mins of daily mobility.'"></textarea>
+                </div>
+
+                <div class="presets">
+                    <span style="font-size: 11px; color: var(--text-muted); align-self: center;">Presets:</span>
+                    <button class="preset-chip" data-text="I have knee pain and patellar tendonitis. Need safe knee stabilization.">🦵 Knee Rehab</button>
+                    <button class="preset-chip" data-text="Severe lower back stiffness from desk work. Need lumbar decompression.">🧘 Back Decompression</button>
+                    <button class="preset-chip" data-text="I am a senior looking for gentle joint balance and mobility.">👵 Senior Mobility</button>
+                    <button class="preset-chip" data-text="Cardio endurance and core strength with zero high impact jumping.">⚡ Cardio & Tone</button>
+                </div>
+
+                <div style="display: flex; justify-content: flex-end;">
+                    <button class="btn-save-goals" id="btnSaveGoals">Update Health Goals</button>
+                </div>
+
+                <div style="margin-top: 16px;">
+                    <span style="font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.05em;">ACTIVE HEALTH GOALS:</span>
+                    <div id="goalsList">Loading goals...</div>
+                </div>
+            </div>
+
+            <!-- Right: Healthcare Recommendations & Recommended Routines -->
+            <div class="card">
+                <h3 style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 12px;">
+                    Healthcare Recommendations & Safety
+                </h3>
+                <div id="recsList">Loading healthcare recommendations...</div>
+
+                <h3 style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-top: 20px; margin-bottom: 12px;">
+                    Recommended Routines
+                </h3>
+                <div id="routinesList">Loading recommended routines...</div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const userId = "default_user";
+
+        // DOM
+        const valWorkouts = document.getElementById("valWorkouts");
+        const valDay = document.getElementById("valDay");
+        const valStreak = document.getElementById("valStreak");
+        const timelineTrack = document.getElementById("timelineTrack");
+        const goalsList = document.getElementById("goalsList");
+        const recsList = document.getElementById("recsList");
+        const routinesList = document.getElementById("routinesList");
+        const goalsInput = document.getElementById("goalsInput");
+        const btnSaveGoals = document.getElementById("btnSaveGoals");
+        const btnCompleteToday = document.getElementById("btnCompleteToday");
+        const micBtn = document.getElementById("micBtn");
+        const micTitle = document.getElementById("micTitle");
+
+        // Speech Recognition
+        let recognizer = null;
+        let isListening = false;
+        const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (SpeechRec) {
+            recognizer = new SpeechRec();
+            recognizer.continuous = false;
+            recognizer.interimResults = true;
+            recognizer.onstart = () => {
+                isListening = true;
+                micBtn.classList.add("listening");
+                micTitle.textContent = "Listening... Speak now";
+            };
+            recognizer.onresult = (e) => {
+                let text = "";
+                for (let i = e.resultIndex; i < e.results.length; i++) {
+                    text += e.results[i][0].transcript;
+                }
+                goalsInput.value = text;
+            };
+            recognizer.onend = () => {
+                isListening = false;
+                micBtn.classList.remove("listening");
+                micTitle.textContent = "Tap mic to speak goals";
+            };
+        }
+
+        micBtn.addEventListener("click", () => {
+            if (!recognizer) {
+                alert("Speech recognition not supported in this browser. Please type into the box.");
+                return;
+            }
+            if (!isListening) recognizer.start();
+            else recognizer.stop();
+        });
+
+        // Presets
+        document.querySelectorAll(".preset-chip").forEach(c => {
+            c.addEventListener("click", () => {
+                goalsInput.value = c.dataset.text;
+                saveGoals(c.dataset.text);
+            });
+        });
+
+        btnSaveGoals.addEventListener("click", () => {
+            const txt = goalsInput.value.trim();
+            if (txt) saveGoals(txt);
+        });
+
+        async function saveGoals(text) {
+            btnSaveGoals.textContent = "Saving...";
+            try {
+                const r = await fetch(`/api/profile/${userId}/goals`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ input_text: text, user_id: userId })
+                });
+                const data = await r.json();
+                renderAll(data);
+                btnSaveGoals.textContent = "Saved ✓";
+                setTimeout(() => { btnSaveGoals.textContent = "Update Health Goals"; }, 1500);
+            } catch (e) {
+                alert("Error saving: " + e.message);
+                btnSaveGoals.textContent = "Update Health Goals";
+            }
+        }
+
+        btnCompleteToday.addEventListener("click", async () => {
+            try {
+                btnCompleteToday.textContent = "Logging...";
+                const r = await fetch(`/api/profile/${userId}/workout/complete`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ routine_title: "Daily Movement Progression", duration_min: 15, reps: 40 })
+                });
+                await loadProfile();
+                btnCompleteToday.textContent = "✓ Logged!";
+                setTimeout(() => { btnCompleteToday.textContent = "✓ Log Today's Workout"; }, 1500);
+            } catch (e) {
+                alert("Error: " + e.message);
+                btnCompleteToday.textContent = "✓ Log Today's Workout";
+            }
+        });
+
+        async function loadProfile() {
+            try {
+                const r = await fetch(`/api/profile/${userId}`);
+                const data = await r.json();
+                renderAll(data);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderAll(data) {
+            const prog = data.progress || {};
+            valWorkouts.textContent = prog.workout_count || 0;
+            valDay.textContent = `Day ${prog.current_day || 0}`;
+            valStreak.textContent = `${prog.streak_days || 0}`;
+
+            // Timeline
+            const timeline = prog.timeline || [];
+            timelineTrack.innerHTML = timeline.map((t, idx) => {
+                const isCompleted = t.status === "completed";
+                const isCurrent = t.is_current;
+                const arrow = idx < timeline.length - 1 ? `<div class="day-arrow ${isCompleted ? 'done' : ''}">&rarr;</div>` : '';
+                return `
+                    <div style="display:flex; flex-direction:column; align-items:center; gap:4px;">
+                        <div class="day-node ${isCompleted ? 'done' : ''} ${isCurrent ? 'now' : ''}">${isCompleted ? '✓' : t.day_number}</div>
+                        <span style="font-size:10px; color:${isCurrent ? 'var(--accent-blue)' : 'var(--text-muted)'}; font-weight:${isCurrent ? '700' : '400'}">Day ${t.day_number}${isCurrent ? ' (Today)' : ''}</span>
+                    </div>
+                    ${arrow}
+                `;
+            }).join("");
+
+            // Goals
+            const goals = data.health_goals || [];
+            goalsList.innerHTML = goals.length ? goals.map((g, i) => `
+                <div class="goal-item"><strong>Goal ${i+1}:</strong> ${g}</div>
+            `).join("") : `<p style="font-size:12px; color:var(--text-muted); margin-top:6px;">No goals logged yet.</p>`;
+
+            // Healthcare recs
+            const recs = data.healthcare_recommendations || [];
+            recsList.innerHTML = recs.length ? recs.map(rc => `
+                <div class="rec-item">🩺 ${rc}</div>
+            `).join("") : `<p style="font-size:12px; color:var(--text-muted);">Standard health rules active.</p>`;
+
+            // Routines
+            const routines = data.recommended_routines || [];
+            routinesList.innerHTML = routines.length ? routines.map(rt => `
+                <div class="routine-item">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span class="routine-title">📋 ${rt.title}</span>
+                        <a href="/" style="font-size:11px; color:var(--accent-blue); text-decoration:none; font-weight:700;">Start Live &rarr;</a>
+                    </div>
+                    <p style="font-size:12px; color:var(--text-muted); margin-top:4px;">${rt.description}</p>
+                </div>
+            `).join("") : `<p style="font-size:12px; color:var(--text-muted);">Routines will appear based on goals.</p>`;
+        }
+
+        loadProfile();
+    </script>
+</body>
+</html>

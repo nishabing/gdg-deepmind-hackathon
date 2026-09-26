@@ -195,7 +195,7 @@ body[data-dbg=on] #dbg{display:block}
       <b id="micRate">–</b></div>
     <div class="pill">frames <b id="frameCount">0</b></div>
     <div class="pill">motion <b id="motionVal">0.0</b></div>
-    <div class="profile" title="Profile">MN</div>
+    <div class="profile" title="View Profile & Progress" onclick="window.location.href='/profile'" style="cursor:pointer">👤</div>
   </header>
 
   <main>
@@ -287,7 +287,8 @@ body[data-dbg=on] #dbg{display:block}
   <h1>Your coach is ready.</h1>
   <p>Press start, then just talk. It watches you move, counts your reps, and stops you
      when your form slips.</p>
-  <button onclick="begin()">Start session</button>
+  <button id="startBtn" onclick="begin()">Start session</button>
+  <div id="gateMsg" style="display:none; color:#fca5a5; font-size:13px; max-width:400px; margin-top:4px; line-height:1.4;"></div>
   <small>Use headphones — otherwise it hears itself and interrupts.<br>
      Press <b style="color:#626b80">D</b> any time for the debug log.</small>
 </div>
@@ -302,6 +303,7 @@ body[data-dbg=on] #dbg{display:block}
     <div class="stat"><b id="rTime">0:00</b><span>duration</span></div>
   </div>
   <button onclick="location.reload()">Start another</button>
+  <button onclick="window.location.href='/profile'" style="background:#1e3a8a; border:1px solid #3b82f6; color:#fff; margin-top:8px;">← Back to Profile & Goals</button>
 </div>
 
 <script>
@@ -345,6 +347,16 @@ $('days').innerHTML=Array.from({length:STREAK_LEN},(_,i)=>{
   const n=i+1, cls=n<STREAK_DAY?'done':n===STREAK_DAY?'now':'';
   return `<div class="day ${cls}"><div class="dot">${n<STREAK_DAY?'✓':n}</div>
           <span>Day ${n}</span></div>`}).join('');
+fetch('/api/profile/default_user').then(r=>r.json()).then(d=>{
+  const day = (d.progress?.current_day || 0) + 1;
+  $('days').innerHTML=Array.from({length:STREAK_LEN},(_,i)=>{
+    const n=i+1, cls=n<day?'done':n===day?'now':'';
+    return `<div class="day ${cls}"><div class="dot">${n<day?'✓':n}</div><span>Day ${n}</span></div>`;
+  }).join('');
+  if(d.health_goals?.length){
+    $('goals').innerHTML=`<p><b>Your Active Health Goals:</b> ${d.health_goals.join(' • ')}</p>`;
+  }
+}).catch(()=>{});
 
 /* ---------- avatar ---------- */
 // A pose is six numbers; every movement is an interpolation between two of them.
@@ -400,27 +412,69 @@ const guessPose=n=>{n=(n||'').toLowerCase();
 
 /* ---------- session ---------- */
 async function begin(){
-  stream=await navigator.mediaDevices.getUserMedia({
-    video:{width:960,height:720},
-    // Without this the coach hears itself through the speakers and cuts itself off.
-    audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}});
-  $('cam').srcObject=stream; await $('cam').play();
+  const msgEl = $('gateMsg');
+  const btn = $('startBtn');
+  if (msgEl) { msgEl.style.display = 'none'; msgEl.textContent = ''; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Connecting...'; }
 
-  ws=new WebSocket(`ws://${location.host}/live`);
-  ws.onmessage=e=>onMsg(JSON.parse(e.data));
-  ws.onclose=()=>{B.dataset.live='off';$('status').textContent='disconnected';
-    L('warn','websocket closed')};
-  ws.onerror=()=>L('warn','websocket error');
-  await new Promise(r=>ws.onopen=r);
+  try {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 960, height: 720 },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
+      });
+      $('cam').srcObject = stream;
+      await $('cam').play();
+    } catch (mediaErr) {
+      console.warn("Camera/mic access error:", mediaErr);
+      if (msgEl) {
+        msgEl.style.display = 'block';
+        msgEl.textContent = 'Camera/mic permission error: ' + (mediaErr.message || mediaErr.name || 'Access denied');
+      }
+      if (btn) { btn.disabled = false; btn.textContent = 'Start session'; }
+      return;
+    }
 
-  outCtx=new AudioContext({sampleRate:OUT_RATE});
-  analyser=outCtx.createAnalyser(); analyser.fftSize=256;
-  analyser.connect(outCtx.destination);
-  playHead=outCtx.currentTime;
-  startMic(); startFrames();
-  clockTimer=setInterval(paintClock,500);   // ticks, but only counts while running
-  B.dataset.live='on'; setPhase('listening'); $('status').textContent='listening';
-  L('info','session started — speak now');
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/live`);
+    ws.onmessage = e => onMsg(JSON.parse(e.data));
+    ws.onclose = ev => {
+      $('status').textContent = 'disconnected';
+      L('warn', 'websocket closed');
+    };
+    ws.onerror = () => L('warn', 'websocket error');
+
+    await new Promise(resolve => {
+      const t = setTimeout(resolve, 2000);
+      ws.onopen = () => { clearTimeout(t); resolve(); };
+      ws.onerror = () => { clearTimeout(t); resolve(); };
+    });
+
+    try {
+      outCtx = new AudioContext({ sampleRate: OUT_RATE });
+      analyser = outCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.connect(outCtx.destination);
+      playHead = outCtx.currentTime;
+    } catch (e) {
+      console.warn('AudioContext error:', e);
+    }
+
+    startMic();
+    startFrames();
+    clockTimer = setInterval(paintClock, 500);
+    B.dataset.live = 'on';
+    setPhase('listening');
+    $('status').textContent = 'listening';
+    L('info', 'session started — speak now');
+  } catch (err) {
+    console.error('Session start error:', err);
+    if (msgEl) {
+      msgEl.style.display = 'block';
+      msgEl.textContent = 'Could not start session: ' + err.message;
+    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Start session'; }
+  }
 }
 
 const elapsedMs=()=>activeMs+(runningSince?Date.now()-runningSince:0);
@@ -563,6 +617,16 @@ function endSession(){
   $('rLine').textContent=tally.total
     ? `${tally.clean} of ${tally.total} reps clean, ${tally.fix} correction${tally.fix===1?'':'s'}.`
     : 'Session ended.';
+  fetch('/api/profile/default_user/workout/complete',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      routine_title:'Live Gemini Trainer Session',
+      duration_min:Math.max(1,Math.round(ms/60000)),
+      reps:tally.clean||0,
+      notes:`${tally.clean} clean reps, ${tally.fix} corrections`
+    })
+  }).catch(()=>{});
   B.dataset.report='on'; stopAll();
 }
 
@@ -583,7 +647,7 @@ function onMsg(m){
   if(m.t==='turn_complete'){$('caption').textContent='';
     $('status').textContent=phase==='demonstrating'?'demonstrating':'watching';return}
   if(m.t==='tool')       return onTool(m.name,m.args||{});
-  if(m.t==='error')      return console.error('[live]',m.d);
+  if(m.t==='error')      { const c=$('caption'); if(c) c.textContent='⚠️ '+m.d; return console.error('[live]',m.d); }
 }
 
 // Tool calls are the control plane. This is the entire state machine.
