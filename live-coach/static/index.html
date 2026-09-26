@@ -116,7 +116,11 @@ body[data-counting=on] .repbox{display:flex}
 .controls{display:flex;align-items:center;gap:10px;padding:12px 16px}
 .timer{display:flex;align-items:baseline;gap:7px;padding:9px 15px;border-radius:11px;
   border:1px solid var(--line);background:var(--panel2);font-variant-numeric:tabular-nums}
-.timer b{font-size:19px;letter-spacing:-.02em}
+.timer{position:relative}
+.timer[data-run=yes]{border-color:#1e5334}
+.timer[data-run=yes] b{color:var(--good)}
+.timer[data-run=no] b{color:var(--dim)}
+.timer b{font-size:19px;letter-spacing:-.02em;transition:color .3s}
 .timer span{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.09em}
 .btn{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);
   background:var(--panel2);color:#aab4c6;display:grid;place-items:center;cursor:pointer;
@@ -255,7 +259,7 @@ body[data-dbg=on] #dbg{display:block}
 
       <section class="card">
         <div class="controls">
-          <div class="timer"><b id="clock">00:00</b><span>elapsed</span></div>
+          <div class="timer" data-run="no"><b id="clock">00:00</b><span>active</span></div>
           <button class="btn" id="micBtn" onclick="toggleMic()" title="Mute">
             <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
               <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></button>
@@ -329,7 +333,9 @@ addEventListener('keydown',e=>{
 });
 
 let ws,stream,micCtx,outCtx,analyser,frameTimer,clockTimer,playHead=0,sources=[];
-let phase='idle',frames=0,amp=0,t0=0,inAmp=0,sentChunks=0;
+let phase='idle',frames=0,amp=0,inAmp=0,sentChunks=0;
+// Workout time, not wall time: accumulate only while they're actually working.
+let activeMs=0,runningSince=null,inWorkout=false;
 let micOn=true,camOn=true;
 const tally={clean:0,total:0,fix:0};
 const setPhase=p=>{phase=p;B.dataset.phase=p};
@@ -412,14 +418,25 @@ async function begin(){
   analyser.connect(outCtx.destination);
   playHead=outCtx.currentTime;
   startMic(); startFrames();
-  t0=Date.now(); clockTimer=setInterval(paintClock,500);
+  clockTimer=setInterval(paintClock,500);   // ticks, but only counts while running
   B.dataset.live='on'; setPhase('listening'); $('status').textContent='listening';
   L('info','session started — speak now');
 }
 
+const elapsedMs=()=>activeMs+(runningSince?Date.now()-runningSince:0);
+const mmss=ms=>{const s=Math.floor(ms/1000);
+  return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`};
+
+function clockStart(){
+  if(runningSince===null){runningSince=Date.now();
+    document.querySelector('.timer').dataset.run='yes'; L('info','workout clock running')}
+}
+function clockPause(why){
+  if(runningSince!==null){activeMs+=Date.now()-runningSince; runningSince=null;
+    document.querySelector('.timer').dataset.run='no'; L('info','workout clock paused — '+why)}
+}
 function paintClock(){
-  const s=Math.floor((Date.now()-t0)/1000);
-  const f=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  const f=mmss(elapsedMs());
   $('clock').textContent=f.padStart(5,'0'); $('sTime').textContent=f;
 }
 
@@ -532,15 +549,17 @@ function toggleCam(){
   $('camBtn').classList.toggle('off',!camOn);
   // Camera off means tracking pauses — tell the model, don't let it guess.
   L('up',camOn?'camera on — tracking resumed':'camera off — tracking paused');
+  if(camOn){ if(inWorkout) clockStart() } else clockPause('camera off');
   ws?.send(JSON.stringify({t:'text',d:camOn
     ?'[VISION: camera back on, tracking resumed]'
     :'[VISION: camera off — tracking paused, you cannot see them]'}));
 }
 function endSession(){
-  const s=Math.floor((Date.now()-t0)/1000);
+  clockPause('session ended');
+  const ms=elapsedMs();
   $('rClean').textContent=tally.clean; $('rTotal').textContent=tally.total;
   $('rFix').textContent=tally.fix;
-  $('rTime').textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  $('rTime').textContent=mmss(ms);
   $('rLine').textContent=tally.total
     ? `${tally.clean} of ${tally.total} reps clean, ${tally.fix} correction${tally.fix===1?'':'s'}.`
     : 'Session ended.';
@@ -574,6 +593,7 @@ function onTool(name,a){
   }
   if(name==='start_exercise'){
     setPhase('working'); B.dataset.counting='on';
+    inWorkout=true; clockStart();
     $('repN').textContent='0'; $('repEx').textContent=a.name||'reps';
     $('status').textContent='watching you'; poseTo(guessPose(a.name));
   }
@@ -588,13 +608,15 @@ function onTool(name,a){
   if(name==='form_error'){$('chip').dataset.s='error';$('chip').textContent=a.cue||a.error;
     tally.fix++; $('sFix').textContent=tally.fix}
   if(name==='end_exercise'){$('chip').dataset.s='';$('chip').textContent='watching';
-    B.dataset.counting='off'; stopCycle()}
+    B.dataset.counting='off'; stopCycle();
+    inWorkout=false; clockPause('exercise finished')}
   if(name==='demonstrate') takeover(a);
 }
 
 /* ---- THE BEAT ---- */
 async function takeover(a){
   setPhase('demonstrating'); tally.fix++; $('sFix').textContent=tally.fix;
+  clockPause('coach is demonstrating');   // they're standing still, not training
   $('bTitle').textContent='Stopping you — '+(a.exercise||'');
   $('bErr').textContent=a.error||'';
   $('caption').textContent=a.correction||'';
@@ -613,6 +635,7 @@ async function takeover(a){
 }
 function resume(){
   stopCycle(); setPhase('working'); $('caption').textContent='';
+  if(inWorkout) clockStart();
   $('status').textContent='watching you'; ws?.send(JSON.stringify({t:'resume'}));
 }
 
