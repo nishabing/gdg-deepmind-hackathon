@@ -576,8 +576,12 @@ let motionCanvas,motionCtx,frameCanvas,frameCtx,prevLuma=null;
 // and very small movements. SENS is a MULTIPLE of the room's measured noise, not an
 // absolute, so the tuning carries across rooms and lighting.
 let noise=0.5, smooth=0.5, SENS=1.7;
-let MIN_HI=4;              // samples of real movement (x120ms) before it counts
+let MIN_HI=3;              // samples of real movement (x120ms) before it counts
 let repState='quiet', above=0, hiN=0, lastRepAt=0, lastMoveAt=0, calibUntil=0;
+let calibSamples=[], lastReject=0;
+// Everything the rep detector decides goes to the server log too, so one log
+// shows the whole picture instead of half of it living in the browser.
+const SLOG=m=>{ L('info',m); ws?.send(JSON.stringify({t:'log',d:m})); };
 
 function startFrames(){
   frameCanvas=document.createElement('canvas'); frameCanvas.width=512; frameCanvas.height=384;
@@ -617,7 +621,19 @@ function sampleMotion(){
   $('motionBar').dataset.hot = smooth>hi ? 'yes':'no';
   if(smooth>hi) lastMoveAt=Date.now();
 
-  if(Date.now()<calibUntil){ $('chip').textContent='calibrating...'; return; }
+  if(Date.now()<calibUntil){
+    $('chip').textContent='calibrating...';
+    calibSamples.push(smooth);
+    return;
+  }
+  if(calibSamples.length){
+    // Take a low percentile, not the average. If they were already moving while we
+    // measured, the average is their movement and every rep afterwards is invisible.
+    const sorted=[...calibSamples].sort((a,b)=>a-b);
+    noise=Math.max(0.15, sorted[Math.floor(sorted.length*0.25)]*1.25);
+    calibSamples=[];
+    SLOG(`rep floor calibrated: ${noise.toFixed(2)} (fires above ${(noise*SENS).toFixed(2)})`);
+  }
 
   if(repState==='quiet'){
     if(smooth>hi){ above++; if(above>=2){repState='active'; hiN=above;} }
@@ -630,9 +646,12 @@ function sampleMotion(){
       repState='quiet'; above=0;
       if(inWorkout && phase!=='demonstrating' && !paused){
         if(longEnough && spaced){ lastRepAt=now; countRep(hiN); }
-        else L('warn',`burst NOT counted — ${hiN} samples above threshold, need `+
-          `${MIN_HI}${spaced?'':'; also too soon after last rep'}. `+
-          `Press , to accept shorter reps, ] to lower the threshold.`);
+        else if(hiN>0 && Date.now()-lastReject>2000){
+          lastReject=Date.now();
+          SLOG(`REP REJECTED: moved for ${(hiN*0.12).toFixed(2)}s, need `+
+            `${(MIN_HI*0.12).toFixed(2)}s${spaced?'':' (also too soon after last)'} `+
+            `| floor ${noise.toFixed(2)} threshold ${(noise*SENS).toFixed(2)}`);
+        }
       }
       hiN=0;
     }

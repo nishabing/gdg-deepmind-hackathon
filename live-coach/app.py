@@ -236,6 +236,9 @@ async def live(ws: WebSocket):
                                      counters["frames"])
                     elif t == "rep":
                         st["reps"] = m.get("n", st["reps"] + 1)
+                        log.info("REP %d  (%s)", st["reps"], st["exercise"])
+                    elif t == "log":
+                        log.info("CLIENT %s", m.get("d", ""))
                     elif t == "pause":
                         # Camera or mic off is a pause, not a hint. Stop the form
                         # watcher and tell the coach to wait rather than coach on.
