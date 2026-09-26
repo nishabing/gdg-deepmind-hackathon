@@ -408,7 +408,19 @@ const guessPose=n=>{n=(n||'').toLowerCase();
 })();
 
 /* ---------- session ---------- */
+let starting=false;
 async function begin(){
+  // Two clicks meant two sockets, two Live sessions and two voices talking over
+  // each other. One session, ever.
+  if(starting || ws){ L('warn','already started — ignoring'); return; }
+  starting=true;
+  document.querySelector('.gate button').disabled=true;
+  try{ await connect(); }
+  catch(e){ starting=false; document.querySelector('.gate button').disabled=false;
+    L('warn','start failed: '+e.message); throw e; }
+}
+
+async function connect(){
   stream=await navigator.mediaDevices.getUserMedia({
     video:{width:960,height:720},
     // Without this the coach hears itself through the speakers and cuts itself off.
@@ -418,7 +430,7 @@ async function begin(){
   ws=new WebSocket(`ws://${location.host}/live`);
   ws.onmessage=e=>onMsg(JSON.parse(e.data));
   ws.onclose=()=>{B.dataset.live='off';$('status').textContent='disconnected';
-    L('warn','websocket closed')};
+    ws=null; starting=false; L('warn','websocket closed')};
   ws.onerror=()=>L('warn','websocket error');
   await new Promise(r=>ws.onopen=r);
 
@@ -643,7 +655,11 @@ function endSession(){
 
 /* ---------- wire ---------- */
 function onMsg(m){
-  if(m.t==='ready')      L('info','server ready — Live session open');
+  if(m.t==='ready'){
+    L('info',`server ready — session #${m.sid}, ${m.open} open`);
+    if(m.open>1) L('warn',`${m.open} LIVE SESSIONS OPEN — two coaches are talking. `+
+      'Close the other tab and reload.');
+  }
   if(m.t==='heard')      L('down','HEARD YOU: '+m.d);
   if(m.t==='caption')    L('down','says: '+m.d);
   if(m.t==='tool')       L('tool',m.name+' '+JSON.stringify(m.args||{}).slice(0,120));
@@ -730,8 +746,9 @@ function stopAudio(){
   $('status').textContent='listening';
 }
 function stopAll(){
+  starting=false;
   clearInterval(frameTimer); clearInterval(motionTimer); clearInterval(clockTimer); stopCycle(); stopAudio();
-  ws?.close(); stream?.getTracks().forEach(t=>t.stop());
+  ws?.close(); ws=null; stream?.getTracks().forEach(t=>t.stop());
   micCtx?.close(); outCtx?.close(); analyser=null;
   setPhase('idle'); B.dataset.live='off'; B.dataset.counting='off';
 }

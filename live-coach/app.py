@@ -44,6 +44,7 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
 log = logging.getLogger("coach")
 
 app = FastAPI()
+SESSIONS = {"n": 0, "seq": 0}     # if this ever exceeds 1, you have two coaches talking
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"],
                       http_options={"api_version": "v1alpha"})
 
@@ -68,6 +69,12 @@ async def index():
 @app.websocket("/live")
 async def live(ws: WebSocket):
     await ws.accept()
+    SESSIONS["seq"] += 1
+    SESSIONS["n"] += 1
+    sid = SESSIONS["seq"]
+    if SESSIONS["n"] > 1:
+        log.warning("!! %d LIVE SESSIONS OPEN -- two coaches will talk over each "
+                    "other. The page opened a second socket.", SESSIONS["n"])
     st = {"exercise": None, "kind": "large", "reps": 0, "frame": None,
           "active": False, "last_serious": 0.0, "demonstrating": False,
           "paused": False}
@@ -75,8 +82,9 @@ async def live(ws: WebSocket):
 
     try:
         async with client.aio.live.connect(model=LIVE, config=CONFIG) as session:
-            log.info("live open  live=%s flash=%s voice=%s", LIVE, FLASH, VOICE)
-            await ws.send_json({"t": "ready"})
+            log.info("live open  #%d  live=%s flash=%s voice=%r  (open sessions: %d)",
+                     sid, LIVE, FLASH, VOICE, SESSIONS["n"])
+            await ws.send_json({"t": "ready", "sid": sid, "open": SESSIONS["n"]})
 
             async def say(text: str):
                 """Hand the coach something to say, in its own voice."""
@@ -212,13 +220,16 @@ async def live(ws: WebSocket):
                     raise t.exception()
 
     except WebSocketDisconnect:
-        log.info("client disconnected")
+        log.info("client disconnected (#%d)", sid)
     except Exception:
         log.error("session failed\n%s", traceback.format_exc())
         try:
             await ws.send_json({"t": "error", "d": traceback.format_exc()[-400:]})
         except Exception:
             pass
+    finally:
+        SESSIONS["n"] = max(0, SESSIONS["n"] - 1)
+        log.info("session #%d closed (open: %d)", sid, SESSIONS["n"])
 
 
 class DemoIn(BaseModel):
